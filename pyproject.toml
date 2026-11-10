@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meeting-preps"
+version = "0.1.0"
+description = "A prep for each meeting worth one, written before it from everything since last time, and kept current."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "m365-graph>=0.1.1",      # calendar, mail and Teams through Graph; not on PyPI, see README
+    "claude-headless>=0.1",   # the headless run and the usage-limit queue; not on PyPI, see README
+    "win-background>=0.2",    # the watcher, notifications, locks and the log; not on PyPI, see README
+]
+
+[project.scripts]
+meeting-preps = "meeting_preps.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
