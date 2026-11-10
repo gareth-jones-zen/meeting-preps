@@ -7,7 +7,7 @@ PREP = """Write {owner}'s prep for their {kind_text}: "{subject}", {when}. It is
 
 {kind_rules}
 Model the shape and depth on the most recent prep of this kind: {previous}. Earlier preps are in {history},
-searched recursively.
+searched recursively. If a prep for this same meeting already exists anywhere, ignore it: write this one fresh.
 
 You can read the files in this folder, plus {owner}'s Teams messages from the last fortnight in chats shared
 with {name}, and their emails with them from the last fortnight, both at the end. For a 1:1 the emails come

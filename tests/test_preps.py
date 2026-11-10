@@ -137,6 +137,8 @@ class Planning(Base):
         self.assertEqual(next(p for p in plan if p["subject"] == "Sam 1:1")["why"], "you're on leave")
 
     def test_previous_prep_found_in_the_archive(self):
+        same_day = self.config.output / "2026-11-11-sam-jones-prep.md"
+        same_day.write_text("x")
         old = self.config.output / "archive" / "2026-10" / "2026-10-28-sam-jones-prep.md"
         old.parent.mkdir(parents=True)
         old.write_text("x")

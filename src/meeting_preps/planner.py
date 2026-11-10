@@ -62,10 +62,13 @@ def week_of(day: dt.date) -> dt.date:
     return day + dt.timedelta(days=(7 - day.weekday()) % 7)
 
 
-def last_prep(config: Config, pattern: str) -> str | None:
-    """The most recent earlier prep of the same kind, searched recursively (archives count)."""
-    glob = pattern.replace("{date}", "*").replace("{week}", "*")
-    found = sorted(config.history.rglob(glob), key=lambda p: p.name) if config.history.exists() else []
+def last_prep(config: Config, pattern: str, before: dt.date) -> str | None:
+    """The most recent prep of the same kind for an EARLIER meeting, searched recursively (archives count).
+    Not one for this meeting: during a side-by-side trial another tool's prep for the same meeting exists,
+    and modelling on it copies it (10 Nov 2026)."""
+    glob = pattern.replace("{date}", "*").replace("{week}", "*").replace("{slug}", "*")
+    found = sorted((p for p in (config.history.rglob(glob) if config.history.exists() else [])
+                    if re.match(r"\d{4}-\d{2}-\d{2}", p.name) and p.name[:10] < before.isoformat()), key=lambda p: p.name)
     return config.relative(found[-1]) if found else None
 
 
@@ -106,7 +109,7 @@ def classify(config: Config, event: dict) -> dict:
         file = series["file"].format(date=day.isoformat(), week=week_of(day).isoformat())
         return {**row, "decision": "prep", "kind": series["kind"], "with": None, "series": row["subject"],
                 "due": _due(config, series, begins).isoformat(timespec="minutes"), "file": file,
-                "exists": (config.output / file).exists(), "previous": last_prep(config, series["file"])}
+                "exists": (config.output / file).exists(), "previous": last_prep(config, series["file"], day)}
     if not others:
         return {**row, "decision": "skip", "why": "your own block"}
     if len(others) > 1:
@@ -118,7 +121,7 @@ def classify(config: Config, event: dict) -> dict:
     file = person["file"].format(date=day.isoformat(), slug=person.get("slug", ""))
     plan = {**row, "decision": "prep", "kind": person["kind"], "with": name,
             "due": _due(config, person, begins).isoformat(timespec="minutes"), "file": file,
-            "exists": (config.output / file).exists(), "previous": last_prep(config, person["file"])}
+            "exists": (config.output / file).exists(), "previous": last_prep(config, person["file"], day)}
     companion = config.kinds[person["kind"]].companion
     if companion:
         plan["companion"] = companion.format(date=day.isoformat(), slug=person.get("slug", ""))
