@@ -187,6 +187,10 @@ class Engine:
             except LimitReached as limit:
                 self.limited(["run"], limit)
                 return 0
+            except TimeoutError:
+                # Another run (a `write` by hand, say) is writing it now: not a failure, and the next run checks.
+                self.log(f"  {plan['file']} is being written by another run; leaving it")
+                continue
             except Exception as error:
                 failures += 1
                 self.log(f"  FAILED {plan['file']}: {error}")
