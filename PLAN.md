@@ -147,7 +147,7 @@ related: [teams-channel-notes-plan.md, mail-triage-plan.md, ../design-meeting-pr
 | Check | Scenarios | Identical |
 |---|---|---|
 | Committed goldens (seed 1, 120 calendars) | 287 | 287 |
-| Fuzz through the Native AOT runner (seed 2, 5,000 calendars) | 8,418 | see below |
+| Fuzz through the Native AOT runner (seed 2, 5,000 calendars, with 1,666 outage sequences) | 8,419 | 8,419 (after the fix below; 3 earlier differences were Python's own `os.replace` failures, bug 1) |
 | GJ's real settings (1,000 calendars, a write per person and series, and the same writes in an outage; local, deleted after) | 1,029 | 1,029 |
 | **Live:** `plan 2026-11-13 35`, Python 0.1.1 and the exe, on a copy of the token cache (GETs only) | 159 meetings (48 preps) | `--json` byte-identical; the text identical (byte-identical once Python's output is UTF-8, see below) |
 
@@ -156,13 +156,15 @@ related: [teams-channel-notes-plan.md, mail-triage-plan.md, ../design-meeting-pr
 **Deliberate differences added:**
 - **Exception names.** Where a prep's first line or the log names an error (`TimeoutError: …`, a context command's `(OSError)`), the .NET uses the Python name for the errors it meets (`PyMore.PyName`): TimeoutError, TimeoutExpired, URLError, OSError, FileNotFoundError, PermissionError, KeyError, ValueError, RuntimeError, CalendarUnavailable; anything else keeps its .NET name. The message text after it is .NET's.
 - **An unusable copy of the calendar** says why in .NET's words where Python's would be its parser's (bad JSON); a missing key, the wrong zone, a bad date or day count read as Python's do. A copy whose `read` time has a UTC offset is unusable in .NET, where Python stopped with a TypeError.
-- **Replacing the state file and the calendar copy** is retried for half a second when another program holds the old file. Python's `os.replace` isn't, and failed four times in about 17,000 oracle runs with `[WinError 5] Access is denied` (below).
+- **Replacing the state file and the calendar copy** is retried for about a second when another program holds the old file. Python's `os.replace` isn't, and failed four times in about 17,000 scenario runs with `[WinError 5] Access is denied` (below).
 - **Output encoding:** the exe always writes UTF-8; Python's `print` to a pipe or file writes the console code page (cp1252 here), so an en dash in `plan`'s text differs in bytes, not in text.
 
 **Python bugs found (not fixed in the Python, as agreed):**
-1. **`_save_state`'s `os.replace` fails now and then on Windows** with `[WinError 5] Access is denied` (something, probably the virus scanner, holding the file), and isn't retried, so the whole run fails; in the watcher that counts towards "couldn't run". `_save_calendar` catches its own, so a copy is just not kept. Seen 4 times in ~17,000 oracle runs.
+1. **`_save_state`'s `os.replace` fails now and then on Windows** with `[WinError 5] Access is denied` (something, probably the virus scanner, holding the file), and isn't retried, so the whole run fails; in the watcher that counts towards "couldn't run". `_save_calendar` catches its own, so a copy is just not kept. Seen 4 times in about 17,000 scenario runs.
 2. **The calendar copy is clipped with `end[:19] > lo`,** a date-time against a date, so an event ending at midnight at the start of the window (an all-day entry the day before) is kept, where Graph would leave it out. `plan` for a day after today then lists the day before's all-day entry as a skipped row; no prep decision changed in the checks. Carried for parity.
 3. **A copy whose `read` has a UTC offset** (hand-edited only) stops the run with a TypeError instead of being "unusable".
+
+**To remake the goldens** (after a Python fix, say): check out `4d63562`, put the Python to compare in `src/meeting_preps`, then from the repo root `python tests/parity/scenarios.py s.jsonl 120 1` and `python tests/parity/oracle.py s.jsonl tests/MeetingPreps.Tests/Golden/scenarios.jsonl` (the Python's m365-graph, win-background and claude-headless must import). A bigger fuzz: `scenarios.py s.jsonl 5000 2`, then `MEETING_PREPS_PARITY_FILE=<goldens> dotnet test`. `real_settings.py <toml> <out> 1000 7` builds scenarios on real settings; keep its output local and delete it after.
 
 **Quirk (e) is gone:** 0.1.1 fixed it upstream (a refresh whose email or Teams failed now waits instead of running Claude), so the .NET no longer carries it.
 
@@ -194,4 +196,4 @@ related: [teams-channel-notes-plan.md, mail-triage-plan.md, ../design-meeting-pr
 
 - **C#:** about 2,100 lines in `MeetingPreps` and the two exes (2,400 as built, with the generated prompts), (the 760 lines of interim helpers went to the library's PyCompat on 13 Nov 2026).
 - **Tests:** about 75 methods, plus Python-generated goldens (planner, prompts, context, engine scenarios).
-- **Parity tooling, not shipped:** the Python oracle (about 400 lines) and the local fuzz runner.
+- **Parity tooling, not shipped:** the Python oracle (about 400 lines), the scenario generators and the Native AOT runner, removed from the branch on 13 Nov 2026 and kept at commit `4d63562`.

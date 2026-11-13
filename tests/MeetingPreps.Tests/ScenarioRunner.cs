@@ -6,8 +6,8 @@ using WinBackground;
 
 namespace MeetingPreps.Parity;
 
-/// <summary>The .NET side of tests/parity/oracle.py: the same scenario, the same fakes, the same record. The two
-/// records are compared whole.</summary>
+/// <summary>The .NET side of the Python oracle (tests/parity/oracle.py at commit 4d63562): the same scenario, the
+/// same fakes, the same record. The two records are compared whole.</summary>
 public static class ScenarioRunner
 {
     public static readonly TimeZoneInfo London = TimeZoneInfo.FindSystemTimeZoneById("GMT Standard Time");

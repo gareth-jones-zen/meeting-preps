@@ -4,9 +4,10 @@ using MeetingPreps.Parity;
 
 namespace MeetingPreps.Tests;
 
-/// <summary>Every scenario the Python oracle ran (tests/parity/oracle.py), run again here: the records must be the same.
-/// Golden/scenarios.jsonl is synthetic and committed. MEETING_PREPS_PARITY_FILE names a larger local file (the fuzz
-/// run, or one built on real settings), which never goes in the repo.</summary>
+/// <summary>Every scenario the Python oracle ran, run again here: the records must be the same. Golden/scenarios.jsonl
+/// is synthetic and committed, made from the Python's v0.1.1 by the oracle and scenario generator in tests/parity/ at
+/// commit 4d63562 (see PLAN.md). MEETING_PREPS_PARITY_FILE names a larger local file (a fuzz run, or one built on real
+/// settings), which never goes in the repo.</summary>
 public class ParityTests
 {
     public static IEnumerable<TheoryDataRow<string>> Committed() =>

@@ -3,5 +3,4 @@
   <Project Path="src/MeetingPreps.Console/MeetingPreps.Console.csproj" />
   <Project Path="src/MeetingPreps/MeetingPreps.csproj" />
   <Project Path="tests/MeetingPreps.Tests/MeetingPreps.Tests.csproj" />
-  <Project Path="tools/Parity/Parity.csproj" />
 </Solution>

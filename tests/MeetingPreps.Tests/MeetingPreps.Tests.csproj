@@ -15,9 +15,6 @@
     <ProjectReference Include="..\..\src\MeetingPreps\MeetingPreps.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="..\..\tools\Parity\ScenarioRunner.cs" />
-  </ItemGroup>
-  <ItemGroup>
     <None Include="Golden\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
