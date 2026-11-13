@@ -2,3 +2,9 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+bin/
+obj/
+out/
+*.user
+.vs/
+TestResults/

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>meeting-preps</AssemblyName>
+    <RootNamespace>MeetingPreps</RootNamespace>
+    <PublishAot>true</PublishAot>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\MeetingPreps\MeetingPreps.csproj" />
+  </ItemGroup>
+</Project>

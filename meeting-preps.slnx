@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="src/MeetingPreps.Background/MeetingPreps.Background.csproj" />
+  <Project Path="src/MeetingPreps.Console/MeetingPreps.Console.csproj" />
+  <Project Path="src/MeetingPreps/MeetingPreps.csproj" />
+  <Project Path="tests/MeetingPreps.Tests/MeetingPreps.Tests.csproj" />
+</Solution>
