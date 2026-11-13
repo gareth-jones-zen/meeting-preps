@@ -2,7 +2,6 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using M365Graph;
-using MeetingPreps.Interim;
 using PyCompat;
 using WinBackground;
 
@@ -156,7 +155,7 @@ public static class Cli
             var graph = host.Graph(config, null);
             if (command == "plan")
             {
-                var start = positional.Count > 0 ? DateOnly.FromDateTime(PyNaive.FromIso(positional[0])) : DateOnly.FromDateTime(host.Clock.Now());
+                var start = positional.Count > 0 ? DateOnly.FromDateTime(PyTime.FromIso(positional[0])) : DateOnly.FromDateTime(host.Clock.Now());
                 var plan = Planner.PlanAll(config, Planner.Events(graph, config, start, planDays), start, planDays);
                 Print(host.Out, flags.Contains("--json") ? Planner.Json(plan) : Planner.Show(plan, start, planDays));
                 return 0;
@@ -175,10 +174,10 @@ public static class Cli
                 case "run":
                     return engine.Run(flags.Contains("--dry-run"));
                 case "write":
-                    engine.WriteOne(DateOnly.FromDateTime(PyNaive.FromIso(positional[0])), positional[1]);
+                    engine.WriteOne(DateOnly.FromDateTime(PyTime.FromIso(positional[0])), positional[1]);
                     return 0;
                 case "prompt":
-                    Print(host.Out, engine.PromptFor(DateOnly.FromDateTime(PyNaive.FromIso(positional[0])), positional[1]));
+                    Print(host.Out, engine.PromptFor(DateOnly.FromDateTime(PyTime.FromIso(positional[0])), positional[1]));
                     return 0;
                 case "update":
                     return engine.Update(positional);

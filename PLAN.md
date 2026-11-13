@@ -41,7 +41,7 @@ related: [teams-channel-notes-plan.md, mail-triage-plan.md, ../design-meeting-pr
 | `autostart.py` | 31 | `Autostart.cs` (~40) | `ScheduledTask("meeting-preps watch")` running the background exe |
 | (new) | - | `Graph.cs` (~90) | `IGraph` (`Get`, `Pages` with headers), and the adapter over M365Graph's `GraphClient` |
 | (new) | - | `Host.cs`, `Clock.cs` | Everything outside (Claude through ClaudeHeadless's `IClaudeRunner`, the queue, Graph, programs, notifications, the clock), so tests and the oracle give fakes |
-| (new) | - | `Interim/` (~760, copied) | What PyCompat (now on the library's `main`) lacks: `PyRegex`, `PyText`, a naive-time `PyNaive` (from mail-triage-dotnet) and `RealPath` (from teams-channel-notes-dotnet). They belong in PyCompat |
+| (new) | - | ~~`Interim/`~~ (removed 13 Nov 2026) | Was copies of what PyCompat lacked: `PyRegex`, `PyText`, a naive-time `PyNaive` and `RealPath`. **Now PyCompat's** `PyRegex`, `PyStr`, `PyTime` and `PyPath.Resolve`, from the library's `main` (v0.2). One small interim piece stays in `Engine.cs`: `re.findall` with a group, as a .NET Regex built from `PyRegex.Translate`, because PyRegex has no `Matches` (finditer) |
 
 **Total: about 2,100 hand-written lines, plus the copied helpers.** Tests: the 12 Python tests by name, plus about 60 new ones, plus committed Python-generated goldens.
 
@@ -112,7 +112,7 @@ related: [teams-channel-notes-plan.md, mail-triage-plan.md, ../design-meeting-pr
 
 **3. Offline parity (tonight), then an independent check** by the main session or a second agent (rule 5).
 
-**4. Library catch-up:** move `Interim/` (`PyRegex`, `PyText`, `PyNaive`, `RealPath`) into PyCompat, shared with mail-triage and teams-channel-notes; rerun the tests and the parity suite.
+**4. Library catch-up (done 13 Nov 2026):** `Interim/` replaced by the consolidated PyCompat (`PyRegex`, `PyStr`, `PyTime`, `PyPath.Resolve`); the tests (233) and the parity suite rerun: 441 of 441 at seed 1, 6,707 of 6,707 at seed 2 through the AOT runner, and 1,515 of 1,515 on GJ's real settings (local, deleted after).
 
 **5. Live read-only checks (needs the laptop, not GJ):** `plan` over 35 days and `prompt` for every prep in a week, from both, on a copy of the token cache. No Claude, no writes.
 
@@ -135,7 +135,7 @@ related: [teams-channel-notes-plan.md, mail-triage-plan.md, ../design-meeting-pr
 | 1 | Repo and names | **Same repo (public), same names, branch `dotnet`.** Same task and lock names, as a safety feature. *Taken overnight* |
 | 2 | When to switch | **One change at a time:** let the EA switch from `draft-prep.py` to the Python meeting-preps first (about 17 Nov), a week live, then the exe. Not the week before GJ's leave (16 Dec) |
 | 3 | How the live check runs | **Compare plans and prompts, not written preps**, so the check costs no Claude usage. A hidden `prompt` command is added for it. *Taken overnight* |
-| 4 | ClaudeHeadless and PyCompat | **Used from the library's `main`** (they landed during the night); only the helpers PyCompat lacks are interim copies. *Taken overnight* |
+| 4 | ClaudeHeadless and PyCompat | **Used from the library's `main`** (they landed during the night); only the helpers PyCompat lacked were interim copies, and those went on 13 Nov 2026 (bar a `finditer`, built from `PyRegex.Translate`). *Taken overnight* |
 | 5 | The queued job | **The queue names the exe**, so after the switch, queued jobs run the .NET version. Jobs queued by Python before the switch still run Python until they drain |
 | 6 | Python quirks | **Carried for parity, fixed after the switch:** (a) the refresh state never forgets old meetings, so it grows by one line per 1:1; (b) `run` returns 0 when it stops at the usage limit even if an earlier prep failed; (c) a person's file name using `{week}` fails at plan time, not load time; (d) `missing_series` checks only calendar rows, so two `weekly` slots on the same day both add a row; (e) a refresh whose email or Teams fetch failed still runs Claude (the "(unavailable…)" text isn't "(none"). *(a) to (e) carried overnight* |
 | 7 | Deliberate differences | An attendee with no name is treated as an empty name (Python crashed the whole plan); a user regex the two dialects read differently is refused at load (leave pattern) or skipped with a log line (a triage rule), rather than run differently; `--version` says the .NET version; argparse's wording is approximated with the same exit codes. *Taken overnight* |
@@ -154,6 +154,6 @@ related: [teams-channel-notes-plan.md, mail-triage-plan.md, ../design-meeting-pr
 
 ## Size, roughly
 
-- **C#:** about 2,100 lines in `MeetingPreps` and the two exes (2,400 as built, with the generated prompts), plus about 760 lines of interim helpers that move to the library.
+- **C#:** about 2,100 lines in `MeetingPreps` and the two exes (2,400 as built, with the generated prompts), (the 760 lines of interim helpers went to the library's PyCompat on 13 Nov 2026).
 - **Tests:** about 75 methods, plus Python-generated goldens (planner, prompts, context, engine scenarios).
 - **Parity tooling, not shipped:** the Python oracle (about 400 lines) and the local fuzz runner.

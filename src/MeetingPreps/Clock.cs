@@ -1,3 +1,4 @@
+using PyCompat;
 namespace MeetingPreps;
 
 /// <summary>The time, and the local time zone, as the Python read them (datetime.now() and astimezone()). Tests and
@@ -14,7 +15,7 @@ public sealed class Clock
     /// <summary>A clock stopped at a local wall-clock time.</summary>
     public static Clock Fixed(DateTime local, TimeZoneInfo zone)
     {
-        var at = MeetingPreps.Interim.PyNaive.Aware(local, zone);
+        var at = PyTime.At(zone, local);
         return new Clock { UtcNow = () => at.ToUniversalTime(), Local = zone };
     }
 
@@ -36,5 +37,5 @@ public sealed class Clock
     public DateTime ToLocal(DateTimeOffset when) => DateTime.SpecifyKind(TimeZoneInfo.ConvertTime(when, Local).DateTime, DateTimeKind.Unspecified);
 
     /// <summary>A naive local time made aware (.astimezone() on a naive datetime).</summary>
-    public DateTimeOffset Aware(DateTime local) => MeetingPreps.Interim.PyNaive.Aware(local, Local);
+    public DateTimeOffset Aware(DateTime local) => PyTime.At(Local, local);
 }

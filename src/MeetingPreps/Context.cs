@@ -1,5 +1,4 @@
 using System.Text.Json.Nodes;
-using MeetingPreps.Interim;
 using PyCompat;
 using Tomlyn;
 using Tomlyn.Model;
@@ -32,7 +31,7 @@ public static class Context
 
     private static string TextOr(JsonNode? node, string fallback) => Py.Truthy(node) ? Py.Str(node) : fallback;
 
-    private static string Strftime(DateTime t, string format) => PyNaive.Strftime(t, format);
+    private static string Strftime(DateTime t, string format) => PyTime.Strftime(t, format);
 
     public static string Diary(IGraph graph, Config config, DateOnly start, int days = 7)
     {
@@ -41,8 +40,8 @@ public static class Context
         {
             if (Py.Truthy(e["isCancelled"]) || Py.Truthy(e["isAllDay"]))
                 continue;
-            var begins = PyNaive.FromIso(PyStr.Head(Py.Str(e["start"]!["dateTime"]), 19));
-            var ends = PyNaive.FromIso(PyStr.Head(Py.Str(e["end"]!["dateTime"]), 19));
+            var begins = PyTime.FromIso(PyStr.Head(Py.Str(e["start"]!["dateTime"]), 19));
+            var ends = PyTime.FromIso(PyStr.Head(Py.Str(e["end"]!["dateTime"]), 19));
             if (begins == ends)
                 continue;
             var people = new List<string>();
@@ -186,7 +185,7 @@ public static class Context
                     var cc = People(m["ccRecipients"]);
                     var sender = Py.Truthy(m["from"]) ? People(new JsonArray(m["from"]!.DeepClone()))[0] : ("", "");
                     var subject = TextOr(m["subject"], "");
-                    var preview = string.Join(" ", PyText.Split(TextOr(m["bodyPreview"], "")));
+                    var preview = string.Join(" ", PyStr.Split(TextOr(m["bodyPreview"], "")));
                     if (NoiseSubject.MatchStart(subject) is not null || preview.StartsWith("____", StringComparison.Ordinal)
                         || subject.Length == 0 || preview.StartsWith("-----", StringComparison.Ordinal))
                         continue;
@@ -226,7 +225,7 @@ public static class Context
                     got.Add((when, line));
                 }
             }
-            var sorted = got.OrderBy(g => g.When).ThenBy(g => g.Line, PyText.Order).ToList();
+            var sorted = got.OrderBy(g => g.When).ThenBy(g => g.Line, PyStr.Order).ToList();
             var kept = PyMore.Last(sorted, cap);
             return kept.Count > 0 ? string.Join("\n", kept.Select(g => g.Line)) : "(none)";
         }
@@ -272,7 +271,7 @@ public static class Context
                         lines.Add((sent, $"- {Strftime(clock.ToLocal(sent), "%a %d %b %H:%M")} [{PyStr.Head(label, 40)}] {sender}: {PyStr.Head(text, 500)}"));
                 }
             }
-            var sorted = lines.OrderBy(l => l.Sent).ThenBy(l => l.Line, PyText.Order).ToList();
+            var sorted = lines.OrderBy(l => l.Sent).ThenBy(l => l.Line, PyStr.Order).ToList();
             var kept = PyMore.Last(sorted, cap);
             return kept.Count > 0 ? string.Join("\n", kept.Select(l => l.Line)) : "(none)";
         }

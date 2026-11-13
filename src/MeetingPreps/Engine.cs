@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using ClaudeHeadless;
-using MeetingPreps.Interim;
 using PyCompat;
 using WinBackground;
 
@@ -26,7 +26,9 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
 {
     private static readonly PyRegex Fence = PyRegex.Get(@"^```(?:markdown|md)?\s*\n|\n```\s*$");
     private static readonly PyRegex BlockAt = PyRegex.Get(@"(?m)^(> \*\*Update |## )");
-    private static readonly PyRegex Speaker = PyRegex.Get(@"(?m)^\*\*(.+?)\*\* \d");
+    // re.findall with a group. PyCompat's PyRegex has no finditer yet, so the pattern is translated by PyRegex and
+    // run as a .NET Regex, with the options PyRegex would give it (interim, until the library has one).
+    private static readonly Regex Speaker = Translated(@"(?m)^\*\*(.+?)\*\* \d");
     private static readonly PyRegex Marks = PyRegex.Get("[#*_>|-]");
 
     public Config Config { get; } = config;
@@ -41,7 +43,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
         return text;
     }
 
-    private static string F(DateTime t, string format) => PyNaive.Strftime(t, format);
+    private static string F(DateTime t, string format) => PyTime.Strftime(t, format);
 
     private string OutputPath(string file) => PyPath.Pure(Path.Combine(Config.Output, file));
 
@@ -161,12 +163,12 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
     {
         var today = DateOnly.FromDateTime(now);
         var end = Planner.NextWorkingDay(today);
-        return Plans(today, end.DayNumber - today.DayNumber + 1).Where(p => PyNaive.FromIso(p.Start) > now).ToList();
+        return Plans(today, end.DayNumber - today.DayNumber + 1).Where(p => PyTime.FromIso(p.Start) > now).ToList();
     }
 
     public static string When(PlanRow plan)
     {
-        var start = PyNaive.FromIso(plan.Start);
+        var start = PyTime.FromIso(plan.Start);
         return $"{F(start, "%A %d %B %Y")}, {F(start, "%H:%M")}–{plan.End}";
     }
 
@@ -199,7 +201,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
             kindText = Fill(kind.Describe, ("name", name), ("slug", person.Slug));
             teams = Context.Teams(graph, name, Clock, log: log);
             mail = Context.Mail(graph, Config, name, Clock, days: 14, log: log);
-            shortName = PyText.Split(name)[0];
+            shortName = PyStr.Split(name)[0];
         }
         var extra = ContextCommands(kind, plan);
         var rules = Fill(kind.Rules, ("name", name), ("slug", Config.Person(plan.With ?? "")?.Slug ?? ""));
@@ -255,7 +257,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
                 var second = OutputPath(plan.Companion);
                 PyStr.WriteText(second, companionText[at..] + "\n");
                 written.Add(second);
-                log($"  companion: {PyText.Split(Marks.Sub(" ", companionText)).Count} words");
+                log($"  companion: {PyStr.Split(Marks.Sub(" ", companionText)).Count} words");
             }
             else
                 log("  no companion document in the reply");
@@ -268,7 +270,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
     public int Run(bool dryRun = false)
     {
         var now = Clock.Now();
-        var due = Upcoming(now).Where(p => PyNaive.FromIso(p.Due!) <= now && !Exists(OutputPath(p.File!))).ToList();
+        var due = Upcoming(now).Where(p => PyTime.FromIso(p.Due!) <= now && !Exists(OutputPath(p.File!))).ToList();
         log($"run{(dryRun ? " (dry run)" : "")}: {due.Count} due");
         var failures = 0;
         foreach (var plan in due)
@@ -322,6 +324,12 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
         PyStr.WriteText(prep, text[..cut] + block + "\n\n" + text[cut..]);
     }
 
+    private static Regex Translated(string pattern)
+    {
+        var (translated, options) = PyRegex.Translate(pattern);
+        return new Regex(translated, options | RegexOptions.CultureInvariant, PyRegex.Timeout);
+    }
+
     public static HashSet<string> Speakers(string transcript) =>
         Speaker.Matches(PyStr.ReadText(transcript)).Select(m => m.Groups[1].Value).ToHashSet();
 
@@ -345,7 +353,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
     public int Update(IEnumerable<string> paths)
     {
         var now = Clock.Now();
-        var transcripts = paths.Where(Exists).Select(RealPath.Resolve).ToList();
+        var transcripts = paths.Where(Exists).Select(PyPath.Resolve).ToList();
         if (transcripts.Count == 0)
             return 0;
         var voices = transcripts.SelectMany(Speakers).ToHashSet();
@@ -434,7 +442,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
         var failures = 0;
         foreach (var plan in Upcoming(now))
         {
-            var start = PyNaive.FromIso(plan.Start);
+            var start = PyTime.FromIso(plan.Start);
             if (plan.Series is not null || start - now > TimeSpan.FromMinutes(Config.RefreshWithinMinutes))
                 continue;
             var prep = OutputPath(plan.File!);
@@ -451,7 +459,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
             }
             var mail = Context.Mail(graph, Config, plan.With, Clock, sinceTime: writtenAt, log: log);
             var teams = Context.Teams(graph, plan.With, Clock, sinceTime: writtenAt, log: log);
-            done[key] = PyNaive.Iso(now, "minutes");
+            done[key] = PyTime.Iso(now, "minutes");
             if (mail.StartsWith("(none", StringComparison.Ordinal) && teams.StartsWith("(none", StringComparison.Ordinal))
             {
                 log($"refresh: nothing new for {prepName} since {F(written, "%H:%M")}");
@@ -503,7 +511,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
     public List<string> WriteOne(DateOnly day, string who)
     {
         var match = Plans(day, 1).FirstOrDefault(p => p.With == who || p.Series == who)
-                    ?? throw new NoSuchMeetingException($"No meeting on {PyNaive.Iso(day)} with {Py.ReprString(who)} that gets a prep.");
+                    ?? throw new NoSuchMeetingException($"No meeting on {PyTime.Iso(day)} with {Py.ReprString(who)} that gets a prep.");
         List<string> written;
         using (Lock(match.File!, 60))
             written = Write(match);
@@ -516,7 +524,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
     public string PromptFor(DateOnly day, string who)
     {
         var match = Plans(day, 1).FirstOrDefault(p => p.With == who || p.Series == who)
-                    ?? throw new NoSuchMeetingException($"No meeting on {PyNaive.Iso(day)} with {Py.ReprString(who)} that gets a prep.");
+                    ?? throw new NoSuchMeetingException($"No meeting on {PyTime.Iso(day)} with {Py.ReprString(who)} that gets a prep.");
         return PrepPrompt(match, Clock.Now());
     }
 }

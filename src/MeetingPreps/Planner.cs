@@ -1,5 +1,4 @@
 using System.Text.Json.Nodes;
-using MeetingPreps.Interim;
 using PyCompat;
 
 namespace MeetingPreps;
@@ -22,8 +21,8 @@ public static class Planner
     public static List<JsonObject> Events(IGraph graph, Config config, DateOnly start, int days)
     {
         var query = PyMore.UrlEncode([
-            ("startDateTime", $"{PyNaive.Iso(start)}T00:00:00"),
-            ("endDateTime", $"{PyNaive.Iso(start.AddDays(days))}T00:00:00"),
+            ("startDateTime", $"{PyTime.Iso(start)}T00:00:00"),
+            ("endDateTime", $"{PyTime.Iso(start.AddDays(days))}T00:00:00"),
             ("$top", "200"), ("$orderby", "start/dateTime"),
             ("$select", "subject,start,end,attendees,organizer,isCancelled,showAs,responseStatus,isAllDay,webLink"),
         ]);
@@ -34,7 +33,7 @@ public static class Planner
     public static DateOnly PreviousWorkingDay(DateOnly day)
     {
         day = day.AddDays(-1);
-        while (PyNaive.Weekday(day) >= 5)
+        while (PyTime.Weekday(day) >= 5)
             day = day.AddDays(-1);
         return day;
     }
@@ -42,15 +41,15 @@ public static class Planner
     public static DateOnly NextWorkingDay(DateOnly day)
     {
         day = day.AddDays(1);
-        while (PyNaive.Weekday(day) >= 5)
+        while (PyTime.Weekday(day) >= 5)
             day = day.AddDays(1);
         return day;
     }
 
-    public static DateTime At(DateOnly day, string hhmm) => day.ToDateTime(TimeOnly.FromTimeSpan(PyNaive.TimeFromIso(hhmm)));
+    public static DateTime At(DateOnly day, string hhmm) => day.ToDateTime(TimeOnly.FromTimeSpan(PyTime.TimeFromIso(hhmm)));
 
     /// <summary>The Monday a weekly document is filed under: that day if it's a Monday, else the coming Monday.</summary>
-    public static DateOnly WeekOf(DateOnly day) => day.AddDays((7 - PyNaive.Weekday(day)) % 7);
+    public static DateOnly WeekOf(DateOnly day) => day.AddDays((7 - PyTime.Weekday(day)) % 7);
 
     /// <summary>The most recent prep of the same kind for an EARLIER meeting, searched recursively (archives count).
     /// Not one for this meeting: during a side-by-side trial another tool's prep for the same meeting exists, and
@@ -60,11 +59,11 @@ public static class Planner
         var glob = pattern.Replace("{date}", "*").Replace("{week}", "*").Replace("{slug}", "*");
         if (!Directory.Exists(config.History))
             return null;
-        var cutoff = PyNaive.Iso(before);
+        var cutoff = PyTime.Iso(before);
         var found = Walk(config.History)
             .Where(p => Glob(Path.GetFileName(p), glob))
             .Where(p => DatePrefix(Path.GetFileName(p)) && string.CompareOrdinal(PyStr.Head(Path.GetFileName(p), 10), cutoff) < 0)
-            .OrderBy(p => Path.GetFileName(p), PyText.Order)
+            .OrderBy(p => Path.GetFileName(p), PyStr.Order)
             .ToList();
         return found.Count > 0 ? config.Relative(found[^1]) : null;
     }
@@ -116,7 +115,7 @@ public static class Planner
             var b = begins.AddHours(-1);
             return a <= b ? a : b;
         }
-        if (begins.TimeOfDay < PyNaive.TimeFromIso(config.FirstThingBefore))
+        if (begins.TimeOfDay < PyTime.TimeFromIso(config.FirstThingBefore))
             return At(PreviousWorkingDay(day), config.DayBeforeAt);
         return At(day, config.OnTheDayAt);
     }
@@ -125,7 +124,7 @@ public static class Planner
 
     private static string? Optional(JsonObject o, string key) => o[key] is JsonValue v ? Py.Str(v) : null;
 
-    private static DateTime Time19(JsonObject e, string key) => PyNaive.FromIso(PyStr.Head(Py.Str(e[key]!["dateTime"]), 19));
+    private static DateTime Time19(JsonObject e, string key) => PyTime.FromIso(PyStr.Head(Py.Str(e[key]!["dateTime"]), 19));
 
     internal static bool IsRoom(string name) => PyRegex.Get("(?i)mtg room|room ").MatchStart(name) is not null;
 
@@ -134,7 +133,7 @@ public static class Planner
         var begins = Time19(e, "start");
         var ends = Time19(e, "end");
         var subject = Py.Truthy(e["subject"]) ? Py.Str(e["subject"]) : "(no subject)";
-        var row = new PlanRow(PyNaive.Iso(begins, "minutes"), PyNaive.Strftime(ends, "%H:%M"), subject);
+        var row = new PlanRow(PyTime.Iso(begins, "minutes"), PyTime.Strftime(ends, "%H:%M"), subject);
         var others = new List<string>();
         foreach (var a in e["attendees"] as JsonArray ?? [])
         {
@@ -160,13 +159,13 @@ public static class Planner
         {
             if (declined)
                 row.NotAttending = "declined";
-            var file = PyMore.Format(series.File, new Dictionary<string, string> { ["date"] = PyNaive.Iso(day), ["week"] = PyNaive.Iso(WeekOf(day)) });
+            var file = PyMore.Format(series.File, new Dictionary<string, string> { ["date"] = PyTime.Iso(day), ["week"] = PyTime.Iso(WeekOf(day)) });
             var plan = row.Copy();
             plan.Decision = "prep";
             plan.Kind = series.Kind;
             plan.With = null;
             plan.Series = subject;
-            plan.Due = PyNaive.Iso(Due(config, series, begins), "minutes");
+            plan.Due = PyTime.Iso(Due(config, series, begins), "minutes");
             plan.File = file;
             plan.Exists = Exists(Path.Combine(config.Output, file));
             plan.Previous = LastPrep(config, series.File, day);
@@ -186,12 +185,12 @@ public static class Planner
             unsure.With = others[0];
             return unsure;
         }
-        var values = new Dictionary<string, string> { ["date"] = PyNaive.Iso(day), ["slug"] = person.Slug };
+        var values = new Dictionary<string, string> { ["date"] = PyTime.Iso(day), ["slug"] = person.Slug };
         var prep = row.Copy();
         prep.Decision = "prep";
         prep.Kind = person.Kind;
         prep.With = with;
-        prep.Due = PyNaive.Iso(Due(config, person, begins), "minutes");
+        prep.Due = PyTime.Iso(Due(config, person, begins), "minutes");
         prep.File = PyMore.Format(person.File, values);
         prep.Exists = Exists(Path.Combine(config.Output, prep.File));
         prep.Previous = LastPrep(config, person.File, day);
@@ -249,8 +248,8 @@ public static class Planner
                 for (var offset = 0; offset < days; offset++)
                 {
                     var day = start.AddDays(offset);
-                    var iso = PyNaive.Iso(day);
-                    if (PyNaive.Weekday(day) != weekday || plan.Any(p => p.Subject == subject && p.Start[..10] == iso))
+                    var iso = PyTime.Iso(day);
+                    if (PyTime.Weekday(day) != weekday || plan.Any(p => p.Subject == subject && p.Start[..10] == iso))
                         continue;
                     var row = Classify(config, new JsonObject
                     {
@@ -270,7 +269,7 @@ public static class Planner
     {
         var plan = items.Select(e => Classify(config, e)).ToList();
         if (start is { } s && days is { } d && d != 0)
-            plan = plan.Concat(MissingSeries(config, plan, s, d)).OrderBy(p => p.Start, PyText.Order).ToList();
+            plan = plan.Concat(MissingSeries(config, plan, s, d)).OrderBy(p => p.Start, PyStr.Order).ToList();
         var away = LeaveDays(config, items);
         foreach (var p in plan)
             if (p.Decision == "prep" && away.Contains(DateOnly.ParseExact(p.Start[..10], "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)))
@@ -294,8 +293,8 @@ public static class Planner
 
     public static string Show(List<PlanRow> plan, DateOnly start, int days)
     {
-        static string When(string iso) => PyNaive.Strftime(PyNaive.FromIso(iso), "%a %d %b %H:%M");
-        var lines = new List<string> { $"Prep plan, {PyNaive.Strftime(start, "%a %d %b")} for {days} days. Nothing is written.\n" };
+        static string When(string iso) => PyTime.Strftime(PyTime.FromIso(iso), "%a %d %b %H:%M");
+        var lines = new List<string> { $"Prep plan, {PyTime.Strftime(start, "%a %d %b")} for {days} days. Nothing is written.\n" };
         var preps = plan.Where(p => p.Decision == "prep").ToList();
         lines.Add($"PREP ({preps.Count})");
         foreach (var p in preps)

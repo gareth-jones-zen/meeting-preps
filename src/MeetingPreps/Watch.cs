@@ -1,4 +1,5 @@
 using M365Graph;
+using PyCompat;
 using WinBackground;
 
 namespace MeetingPreps;
@@ -15,9 +16,9 @@ public static class Watch
 
     public static bool Due(Config config, DateTime now)
     {
-        if (config.WatchWeekdays && Interim.PyNaive.Weekday(now) >= 5)
+        if (config.WatchWeekdays && PyTime.Weekday(now) >= 5)
             return false;
-        var hhmm = Interim.PyNaive.Strftime(now, "%H:%M");
+        var hhmm = PyTime.Strftime(now, "%H:%M");
         return string.CompareOrdinal(config.WatchHours.Start, hhmm) <= 0 && string.CompareOrdinal(hhmm, config.WatchHours.End) < 0;
     }
 

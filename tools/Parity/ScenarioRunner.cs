@@ -1,7 +1,6 @@
 using System.Text.Json.Nodes;
 using System.Web;
 using ClaudeHeadless;
-using MeetingPreps.Interim;
 using PyCompat;
 using WinBackground;
 
@@ -91,7 +90,7 @@ public static class ScenarioRunner
             var reply = replies[0];
             replies.RemoveAt(0);
             if (reply is JsonObject o && o["limit"] is { } limit)
-                throw new LimitReachedException(PyNaive.Aware(PyNaive.FromIso((string)limit!), London), "limit");
+                throw new LimitReachedException(PyTime.At(London, PyTime.FromIso((string)limit!)), "limit");
             if (reply is JsonObject e && e["error"] is { } error)
                 throw new ClaudeRunException((string)error!);
             return new JsonObject { ["result"] = reply!.DeepClone(), ["num_turns"] = 2, ["session_id"] = "sess-1" };
@@ -134,14 +133,14 @@ public static class ScenarioRunner
     {
         var tmpGiven = Path.Combine(Path.GetTempPath(), "mp-net-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(tmpGiven);
-        var tmp = RealPath.Resolve(tmpGiven);
+        var tmp = PyPath.Resolve(tmpGiven);
         var record = new JsonObject
         {
             ["ops"] = new JsonArray(), ["prompts"] = new JsonArray(), ["graph"] = new JsonArray(), ["processes"] = new JsonArray(),
             ["log"] = new JsonArray(), ["notify"] = new JsonArray(), ["retries"] = new JsonArray(),
         };
         var replies = (scenario["claude"] as JsonArray ?? []).Select(r => r?.DeepClone()).ToList();
-        var now = PyNaive.FromIso((string?)scenario["now"] ?? "2026-11-11T08:00:00");
+        var now = PyTime.FromIso((string?)scenario["now"] ?? "2026-11-11T08:00:00");
         var clock = Clock.Fixed(now, London);
         var logList = (JsonArray)record["log"]!;
         void Log(string text) => logList.Add((JsonNode)text);
@@ -154,7 +153,7 @@ public static class ScenarioRunner
                 ((JsonArray)record["retries"]!).Add((JsonNode)new JsonObject
                 {
                     ["argv"] = new JsonArray(argv.Skip(1).Select(a => (JsonNode)a).ToArray()), ["cwd"] = cwd,
-                    ["reset"] = PyNaive.Strftime(reset.DateTime, "%Y-%m-%dT%H:%M"),
+                    ["reset"] = PyTime.Strftime(reset.DateTime, "%Y-%m-%dT%H:%M"),
                 });
                 return true;
             },
@@ -172,7 +171,7 @@ public static class ScenarioRunner
                 File.WriteAllBytes(path, new System.Text.UTF8Encoding(false).GetBytes((string)text!));
             }
             foreach (var (name, when) in scenario["mtimes"] as JsonObject ?? [])
-                File.SetLastWriteTimeUtc(Path.Combine(tmp, name), PyNaive.Aware(PyNaive.FromIso((string)when!), London).UtcDateTime);
+                File.SetLastWriteTimeUtc(Path.Combine(tmp, name), PyTime.At(London, PyTime.FromIso((string)when!)).UtcDateTime);
             File.WriteAllBytes(Path.Combine(tmp, "config.toml"), new System.Text.UTF8Encoding(false).GetBytes((string)scenario["settings"]!));
             var graph = new FakeGraph(scenario["graph"] as JsonObject ?? [], (JsonArray)record["graph"]!);
             Config? config = null;

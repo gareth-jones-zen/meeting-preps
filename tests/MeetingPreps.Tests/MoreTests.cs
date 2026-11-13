@@ -1,5 +1,5 @@
+using PyCompat;
 using System.Text.Json.Nodes;
-using MeetingPreps.Interim;
 using WinBackground;
 
 using MeetingPreps.Parity;
@@ -66,7 +66,7 @@ public class MoreTests
     public void The_watcher_runs_in_working_hours(string now, bool due)
     {
         using var f = new Fixture();
-        Assert.Equal(due, Watch.Due(f.Config, PyNaive.FromIso(now)));
+        Assert.Equal(due, Watch.Due(f.Config, PyTime.FromIso(now)));
     }
 
     private sealed class Failing(Exception error) : IGraph

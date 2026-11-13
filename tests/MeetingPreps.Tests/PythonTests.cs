@@ -1,6 +1,5 @@
 using System.Text.Json.Nodes;
 using ClaudeHeadless;
-using MeetingPreps.Interim;
 using PyCompat;
 
 using MeetingPreps.Parity;
@@ -74,7 +73,7 @@ public sealed class Fixture : IDisposable
 
     public Fixture(string? settings = null, DateTime? now = null)
     {
-        Dir = RealPath.Resolve(Directory.CreateTempSubdirectory("mp-test-").FullName);
+        Dir = PyPath.Resolve(Directory.CreateTempSubdirectory("mp-test-").FullName);
         Directory.CreateDirectory(Path.Combine(Dir, "work", "preps"));
         File.WriteAllText(Path.Combine(Dir, "house.md"), "- No code names.");
         File.WriteAllText(Path.Combine(Dir, "config.toml"), (settings ?? Settings).ReplaceLineEndings("\n"));

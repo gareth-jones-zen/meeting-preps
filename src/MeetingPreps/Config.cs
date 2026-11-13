@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
-using MeetingPreps.Interim;
 using PyCompat;
 using Tomlyn;
 using Tomlyn.Model;
@@ -128,7 +127,7 @@ public sealed class Config
     /// <summary>Path(path).resolve().relative_to(workspace).as_posix(), or str(path) if it isn't inside.</summary>
     public string Relative(string path)
     {
-        var resolved = RealPath.Resolve(path);
+        var resolved = PyPath.Resolve(path);
         return RelativeTo(resolved, Workspace) is { } inside ? inside : path;
     }
 
@@ -170,7 +169,7 @@ public sealed class Config
     private static string PathSetting(string value, string folder, Func<string, string?> env)
     {
         var expanded = PyPath.ExpandVars(PyPath.ExpandUser(value, env), env);
-        return RealPath.Resolve(PyPath.IsAbsolute(expanded) ? expanded : System.IO.Path.Combine(folder, expanded));
+        return PyPath.Resolve(PyPath.IsAbsolute(expanded) ? expanded : System.IO.Path.Combine(folder, expanded));
     }
 
     private static readonly Regex Time = new(@"^([01]\d|2[0-3]):[0-5]\d$", RegexOptions.CultureInvariant);
@@ -184,7 +183,7 @@ public sealed class Config
     {
         env ??= Environment;
         var given = !string.IsNullOrEmpty(path) ? path : env(EnvConfig) is { Length: > 0 } fromEnv ? fromEnv : DefaultPath(env);
-        var full = RealPath.Resolve(given);
+        var full = PyPath.Resolve(given);
         if (!File.Exists(full))
             throw new FileNotFoundException($"No settings file at {full}. Run `meeting-preps config` to create one.");
         TomlTable raw;
@@ -406,7 +405,7 @@ public sealed class Config
         long l => l,
         double d when double.IsFinite(d) => (long)Math.Truncate(d),
         bool b => b ? 1 : 0,
-        string s => PyText.Int(s),
+        string s => PyStr.Int(s),
         _ => throw new SettingsException($"{value} isn't a whole number."),
     };
 }
