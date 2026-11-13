@@ -25,7 +25,7 @@ related: [teams-channel-notes-plan.md, mail-triage-plan.md, ../design-meeting-pr
 | State, log | as set in the toml (`%LOCALAPPDATA%\claude-ea\meeting-preps-state.json`, `meeting-preps.log`) | unchanged, **the same files** |
 | Task | `meeting-preps watch` | unchanged |
 | Locks | `Local\meeting-preps-watch-{key(settings)}` and `Local\meeting-preps-{key(settings)}-{key(file)}` | **identical** (`Locks.Key` equals Python's `key()`), so a .NET `write` by hand and a Python watcher exclude each other |
-| Code | `meeting_preps` | namespace `MeetingPreps`; uses WinBackground and M365Graph from background-tools-lib, and ClaudeHeadless once it is on the library's `main` |
+| Code | `meeting_preps` | namespace `MeetingPreps`; uses WinBackground, M365Graph, ClaudeHeadless and PyCompat from background-tools-lib |
 
 ## Module map
 
@@ -33,22 +33,22 @@ related: [teams-channel-notes-plan.md, mail-triage-plan.md, ../design-meeting-pr
 |---|---|---|---|
 | `config.py` | 246 | `Config.cs` (~330) | Tomlyn untyped tables, **in file order** (series order decides the order "missing" slots are added). `_path` is `expandvars(expanduser())` then `resolve()`. `rules_file`/`house_rules` read with universal newlines, then `strip()`. `leave_pattern` checked with Python's `re` rules (the regex guard). Error messages kept word for word: they are what GJ sees |
 | `planner.py` | 201 | `Planner.cs` (~330), `PlanRow.cs` (~90) | **The deterministic heart.** Naive wall-clock times (Graph is asked for "GMT Standard Time" and `[:19]` taken), so no zone maths. A plan row is a Python dict whose **key order** shows in `plan --json`: an ordered row type whose `update()` keeps a key's place and appends new ones. `str.format` on user file names (`{date}`, `{week}`, `{slug}`; a missing field is an error, as `KeyError` was). `last_prep` is `rglob` (case-insensitive on Windows), sorted by name, stable. Stable sort by `start`. `%a %d %b %H:%M` in English |
-| `prompts.py` | 92 | `Prompts.cs` (~110) | The four templates verbatim (raw string literals), filled by a one-pass `str.format` (a value is never re-scanned), and `fill()`'s sequential replace (which does re-scan) |
+| `prompts.py` | 92 | `PromptText.g.cs` (generated) | The four templates, **generated from the Python's `prompts.py`** (`tools/gen/prompts_to_cs.py`) so they can't drift, filled by a one-pass `str.format` (a value is never re-scanned), and `fill()`'s sequential replace (which does re-scan) |
 | `engine.py` | 332 | `Engine.cs` (~430) | The reply clean-up regex (`` ^```(markdown|md)? ``), `partition("===COMPANION===")`, the `# [DRAFT]` cut; files written as Python's `write_text` does (**CRLF on disk**, UTF-8, no BOM); `add_block`'s `^(> \*\*Update |## )` in multiline mode; `speakers()`; the refresh state as `json.dumps(indent=2)`; the after-write payload as `json.dumps` (`", "`, `": "`, ASCII-escaped); the lock names; usage-limit handling and the queued command |
 | `context.py` | 178 | `Context.cs` (~300) | Python regexes with `\s` (adds U+001C to U+001F), `.` and `$` semantics; `str.split()` whitespace; code-point slices (`[:240]`, `[:2000]`); sorting `(datetime, line)` tuples (instant, then code-point order); local time from `astimezone()` (an injected zone, "GMT Standard Time" on GJ's laptop); mail-triage's own rule regexes run as Python would (the regex guard); `urlencode` (quote_plus) for the calendar query |
 | `cli.py` | 140 | `Cli.cs` (~260) | argparse's shape and exit codes (0; 2 for settings, sign-in and "no such meeting"; 1 when a run had failures; 3 when another watcher runs); `_hook_paths` |
 | `watch.py` | 69 | `Watch.cs` (~120) | 30 s tick, a run every N minutes within hours, settings re-read each run; notify after 3 failures in a row, a sign-in at once; `alive` hourly; the same log line format (session-start parses it) |
 | `autostart.py` | 31 | `Autostart.cs` (~40) | `ScheduledTask("meeting-preps watch")` running the background exe |
 | (new) | - | `Graph.cs` (~90) | `IGraph` (`Get`, `Pages` with headers), and the adapter over M365Graph's `GraphClient` |
-| (new) | - | `Headless.cs` (~80) | **Interim** `IHeadless` (run, queue a retry) and `LimitReachedException`, shaped like ClaudeHeadless's `IClaudeRunner` and `JobQueue.Retry`, with a fake for tests |
-| (new) | - | `Interim/` (~1,250, copied) | Python-exact helpers copied from mail-triage-dotnet (`Py`, `PyJson`, `PyPath`, `PyRegex`, `PyText`, `PyTime`). They belong in background-tools-lib's `PyCompat` (on the `claude-headless` branch tonight) and go when it lands |
+| (new) | - | `Host.cs`, `Clock.cs` | Everything outside (Claude through ClaudeHeadless's `IClaudeRunner`, the queue, Graph, programs, notifications, the clock), so tests and the oracle give fakes |
+| (new) | - | `Interim/` (~760, copied) | What PyCompat (now on the library's `main`) lacks: `PyRegex`, `PyText`, a naive-time `PyNaive` (from mail-triage-dotnet) and `RealPath` (from teams-channel-notes-dotnet). They belong in PyCompat |
 
 **Total: about 2,100 hand-written lines, plus the copied helpers.** Tests: the 12 Python tests by name, plus about 60 new ones, plus committed Python-generated goldens.
 
 ### The hard parts, in more detail
 
 - **Time.** The planner never converts zones: it slices Graph's local `dateTime` strings and compares naive times, so .NET uses `DateTime` (Unspecified) throughout and is immune to the clock change. **Context is different:** email and Teams times are UTC and are shown in local time (`astimezone()`), so the zone is injected; tests pin "GMT Standard Time", which also makes CI (a UTC runner) agree with goldens made on the laptop.
-- **"Now".** The engine reads the clock in five places (including a second `now()` for `hhmm`). A `TimeProvider` is threaded through; the Python oracle is driven by swapping the modules' `dt` for one whose `datetime.now()` is fixed.
+- **"Now".** The engine reads the clock in five places (including a second `now()` for `hhmm`). A `Clock` (now, and the local zone) is threaded through; the Python oracle is driven by swapping the modules' `dt` for one whose `datetime.now()` is fixed.
 - **Files.** Python writes text in text mode, so **every prep on disk has CRLF line endings**, and reads them back with universal newlines. `add_block` reads, splices and rewrites, so its output is CRLF too. The .NET port writes the same bytes.
 - **Regexes.** Three sources are user-written: `leave_pattern`, `noise_senders`, and mail-triage's rules (`sender`, `match`) read from `noise_rules`. They go through `PyRegex` (Python's `\w`, `\s`, `\b`; a guard refusing anything the two dialects read differently, checked at load for `leave_pattern` and skipped-with-a-log-line for a triage rule, which matches the Python's own tolerance of a bad rules file). The tool's own patterns are hand-translated and tested.
 - **Plan row key order.** Visible only in `plan --json`, but it is the easiest way to diff two planners, so it is kept exactly.
@@ -67,18 +67,18 @@ related: [teams-channel-notes-plan.md, mail-triage-plan.md, ../design-meeting-pr
 
 ## What it needs from ClaudeHeadless
 
-| Need | Python | Interim here |
+| Need | Python | .NET (ClaudeHeadless on `main`, e76d06f) |
 |---|---|---|
-| A headless run: `claude -p --output-format json --model … --tools Read,Grep,Glob --strict-mcp-config --permission-mode dontAsk [--add-dir …]`, prompt on stdin, cwd the workspace, a timeout; returns the JSON (`result`, `num_turns`, `session_id`) | `claude_headless.run` | `IHeadless.Run`, the same shape as `IClaudeRunner.Run` |
-| The usage limit as its own exception with the reset time | `LimitReached` | `LimitReachedException` (the same name and shape as the library's) |
-| Queue the job for after the reset; true once per limit, so it notifies once | `queue.retry(argv, cwd, reset)` | `IHeadless.Retry`, the same shape as `JobQueue.Retry` |
+| A headless run: `claude -p --output-format json --model … --tools Read,Grep,Glob --strict-mcp-config --permission-mode dontAsk [--add-dir …]`, prompt on stdin, cwd the workspace, a timeout; returns the JSON (`result`, `num_turns`, `session_id`) | `claude_headless.run` | `IClaudeRunner.Run` (`ClaudeRunner`; a fake in tests) |
+| The usage limit as its own exception with the reset time | `LimitReached` | `LimitReachedException` |
+| Queue the job for after the reset; true once per limit, so it notifies once | `queue.retry(argv, cwd, reset)` | `JobQueue.Retry` (through `PrepsHost`, so tests record it) |
 | The queued command | `[python, -m, meeting_preps, --config, <settings>, run]` | `[<meeting-preps.exe>, --config, <settings>, run]` (deliberate difference: the runner starts the exe) |
 
-**When ClaudeHeadless lands on `main`:** an adapter of about 20 lines (`ClaudeRunner` and `JobQueue.Default`), the interim types deleted, and the `Interim/` helpers replaced by a `PyCompat` reference. The queue file is shared with the Python tools (the library already proves `queue.json` byte-identical).
+**ClaudeHeadless landed on `main` during the night, so the port uses it directly** (no interim interface). The queue file is shared with the Python tools (the library already proves `queue.json` byte-identical).
 
 ## Safety
 
-- **Never runs `claude` in tests or parity checks.** Every test uses the fake `IHeadless`; the parity harness patches the Python's `claude()` to record the prompt and return a canned reply.
+- **Never runs `claude` in tests or parity checks.** Every test uses a fake `IClaudeRunner`; the parity harness patches the Python's `claude()` to record the prompt and return a canned reply.
 - **No Graph in tests or offline parity:** a fake `IGraph` serving recorded or synthetic JSON. The real adapter refuses non-GET methods.
 - **Context commands are never run for real offline** (`exco-status.py` runs a teams-channel-notes sync and doc-filer): an `IProcessRunner` fake records the command, cwd and environment.
 - **One actor.** Same task name, same lock names (watch and per-file). A .NET watcher and a Python watcher for the same settings can't both run; a .NET `write` waits for a Python run writing the same file.
@@ -112,7 +112,7 @@ related: [teams-channel-notes-plan.md, mail-triage-plan.md, ../design-meeting-pr
 
 **3. Offline parity (tonight), then an independent check** by the main session or a second agent (rule 5).
 
-**4. Library catch-up:** swap the interim `IHeadless` for ClaudeHeadless, and `Interim/` for `PyCompat`, once both are on the library's `main`. Rerun the tests and the parity suite.
+**4. Library catch-up:** move `Interim/` (`PyRegex`, `PyText`, `PyNaive`, `RealPath`) into PyCompat, shared with mail-triage and teams-channel-notes; rerun the tests and the parity suite.
 
 **5. Live read-only checks (needs the laptop, not GJ):** `plan` over 35 days and `prompt` for every prep in a week, from both, on a copy of the token cache. No Claude, no writes.
 
@@ -135,7 +135,7 @@ related: [teams-channel-notes-plan.md, mail-triage-plan.md, ../design-meeting-pr
 | 1 | Repo and names | **Same repo (public), same names, branch `dotnet`.** Same task and lock names, as a safety feature. *Taken overnight* |
 | 2 | When to switch | **One change at a time:** let the EA switch from `draft-prep.py` to the Python meeting-preps first (about 17 Nov), a week live, then the exe. Not the week before GJ's leave (16 Dec) |
 | 3 | How the live check runs | **Compare plans and prompts, not written preps**, so the check costs no Claude usage. A hidden `prompt` command is added for it. *Taken overnight* |
-| 4 | ClaudeHeadless | **An interim interface tonight, swapped for the library when it lands on `main`** (the brief's instruction). *Taken overnight* |
+| 4 | ClaudeHeadless and PyCompat | **Used from the library's `main`** (they landed during the night); only the helpers PyCompat lacks are interim copies. *Taken overnight* |
 | 5 | The queued job | **The queue names the exe**, so after the switch, queued jobs run the .NET version. Jobs queued by Python before the switch still run Python until they drain |
 | 6 | Python quirks | **Carried for parity, fixed after the switch:** (a) the refresh state never forgets old meetings, so it grows by one line per 1:1; (b) `run` returns 0 when it stops at the usage limit even if an earlier prep failed; (c) a person's file name using `{week}` fails at plan time, not load time; (d) `missing_series` checks only calendar rows, so two `weekly` slots on the same day both add a row; (e) a refresh whose email or Teams fetch failed still runs Claude (the "(unavailable…)" text isn't "(none"). *(a) to (e) carried overnight* |
 | 7 | Deliberate differences | An attendee with no name is treated as an empty name (Python crashed the whole plan); a user regex the two dialects read differently is refused at load (leave pattern) or skipped with a log line (a triage rule), rather than run differently; `--version` says the .NET version; argparse's wording is approximated with the same exit codes. *Taken overnight* |
@@ -154,6 +154,6 @@ related: [teams-channel-notes-plan.md, mail-triage-plan.md, ../design-meeting-pr
 
 ## Size, roughly
 
-- **C#:** about 2,100 lines in `MeetingPreps` and the two exes, plus about 1,250 lines of interim helpers that move to the library.
+- **C#:** about 2,100 lines in `MeetingPreps` and the two exes (2,400 as built, with the generated prompts), plus about 760 lines of interim helpers that move to the library.
 - **Tests:** about 75 methods, plus Python-generated goldens (planner, prompts, context, engine scenarios).
 - **Parity tooling, not shipped:** the Python oracle (about 400 lines) and the local fuzz runner.
