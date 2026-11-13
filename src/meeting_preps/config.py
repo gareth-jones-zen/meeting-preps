@@ -1,4 +1,4 @@
-"""The settings file: who you are, which meetings get a prep, how each kind is written, and where it goes.
+r"""The settings file: who you are, which meetings get a prep, how each kind is written, and where it goes.
 
     me = "Alex Smith"                       # your name as calendar invites show it
     email = "alex.smith@example.com"        # your address, for telling your mail from others'
@@ -21,6 +21,8 @@
     noise_rules = "mail-triage.toml"        # optional: a mail-triage settings file; its delete rules mark noise
     timezone = "GMT Standard Time"          # Windows time zone name, for the calendar
     scopes = ["Calendars.Read", "Mail.Read", "Chat.Read"]   # optional: what to sign in for
+    calendar_cache_days = 3                 # a Microsoft 365 outage: plan from the last good calendar read, if this recent
+    calendar_cache = "calendar.json"        # optional: where it's kept (default: beside state_file, as <state>.calendar.json)
 
     [watch]
     every_minutes = 5
@@ -135,6 +137,12 @@ class Config:
     watch_weekdays: bool = True
     log_file: pathlib.Path = LOCAL / "meeting-preps.log"
     state_file: pathlib.Path = LOCAL / "state.json"
+    calendar_cache: pathlib.Path | None = None
+    calendar_cache_days: float = 3
+
+    def __post_init__(self):
+        if self.calendar_cache is None:
+            self.calendar_cache = self.state_file.with_suffix(".calendar.json")
 
     def relative(self, path: pathlib.Path) -> str:
         try:
@@ -226,7 +234,9 @@ def load(path: pathlib.Path | str | None = None) -> Config:
         watch_every_minutes=int(raw.get("watch", {}).get("every_minutes", 5)),
         watch_hours=tuple(hours.split("-")), watch_weekdays=bool(raw.get("watch", {}).get("weekdays", True)),
         log_file=_path(raw["log_file"], base) if raw.get("log_file") else LOCAL / "meeting-preps.log",
-        state_file=_path(raw["state_file"], base) if raw.get("state_file") else LOCAL / "state.json")
+        state_file=_path(raw["state_file"], base) if raw.get("state_file") else LOCAL / "state.json",
+        calendar_cache=_path(raw["calendar_cache"], base) if raw.get("calendar_cache") else None,
+        calendar_cache_days=float(raw.get("calendar_cache_days", 3)))
 
 
 def _house_rules(raw: dict, base: pathlib.Path, path: pathlib.Path) -> str:

@@ -1,17 +1,19 @@
 """Run with: python -m unittest discover -s tests   (nothing here calls Graph or Claude)"""
 
 import datetime as dt
+import io
 import json
 import pathlib
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 from meeting_preps import config as cfg, context, planner  # noqa: E402
-from meeting_preps.engine import Engine, fill  # noqa: E402
+from meeting_preps.engine import CalendarUnavailable, Engine, fill  # noqa: E402
 
 SETTINGS = """
 me = "Alex Smith"
@@ -168,6 +170,7 @@ class Writing(Base):
 
     def patched(self, reply):
         return [mock.patch("meeting_preps.engine.context.diary", return_value="(nothing)"),
+                mock.patch.object(Engine, "calendar", return_value=([], dt.date.today(), 7)),
                 mock.patch("meeting_preps.engine.context.teams", return_value="(none)"),
                 mock.patch("meeting_preps.engine.context.mail", return_value="(none)"),
                 mock.patch.object(Engine, "claude", return_value=reply)]
@@ -244,6 +247,181 @@ class Writing(Base):
     def test_fill_leaves_other_braces(self):
         self.assertEqual(fill("{name} and {other}", name="Sam"), "Sam and {other}")
 
+
+class FakeGraph:
+    """Graph with an outage you choose: down is a set of "calendar", "email" and "Teams". Every call is recorded."""
+
+    def __init__(self, events=(), down=()):
+        self.events, self.down, self.calls = list(events), set(down), []
+
+    def _call(self, url):
+        label = "calendar" if "calendarView" in url else "Teams" if "chats" in url else "email"
+        self.calls.append(label)
+        if label in self.down:
+            raise urllib.error.HTTPError(url, 502, "Bad Gateway", {}, io.BytesIO(b""))
+
+    def pages(self, url, headers=None, scopes=None, stop=None):
+        self._call(url)
+        yield from (self.events if "calendarView" in url else [])
+
+    def get(self, url, scopes=None, headers=None):
+        self._call(url)
+        return {"value": []}
+
+
+AUTO_REPLY = "# [DRAFT] Sam Jones 1:1\n*Written automatically by meeting-preps.*\nSources: notes.\n\n## Items\n- one"
+
+
+class Outage(Base):
+    """A Microsoft 365 outage (13 Nov 2026): preps are still written, say what they lacked, and it's notified once."""
+
+    def setUp(self):
+        super().setUp()
+        self.notify = mock.patch("meeting_preps.engine.notify").start()
+        self.claude = mock.patch.object(Engine, "claude", return_value=AUTO_REPLY).start()
+        self.addCleanup(mock.patch.stopall)
+        self.logged = []
+
+    def meetings(self, *names):
+        """1:1s due now: an hour and a half ahead, so due already and outside the pre-meeting refresh."""
+        out = []
+        for i, name in enumerate(names):
+            begins = (dt.datetime.now() + dt.timedelta(minutes=90 + 5 * i)).replace(second=0, microsecond=0)
+            out.append(event(f"{name} 1:1", begins.isoformat(timespec="minutes"),
+                             (begins + dt.timedelta(minutes=30)).isoformat(timespec="minutes"), [name]))
+        return out
+
+    def engine(self, graph):
+        return Engine(self.config, graph, log=self.logged.append)
+
+    def keep_calendar(self, events, read=None):
+        """A good calendar read, kept as the copy an outage falls back to."""
+        self.engine(FakeGraph(events)).plans(dt.date.today(), 2)
+        if read:
+            data = json.loads(self.config.calendar_cache.read_text(encoding="utf-8"))
+            data["read"] = read.isoformat(timespec="seconds")
+            self.config.calendar_cache.write_text(json.dumps(data), encoding="utf-8")
+
+    def prep(self, name="sam-jones"):
+        found = list(self.config.output.glob(f"*-{name}-prep.md"))
+        return found[0].read_text(encoding="utf-8") if found else None
+
+    def titles(self):
+        return [c.args[0] for c in self.notify.call_args_list]
+
+    def test_calendar_down_plans_from_the_copy_and_says_so(self):
+        events = self.meetings("Sam Jones")
+        self.keep_calendar(events)
+        graph = FakeGraph(events, down={"calendar"})
+        self.assertEqual(self.engine(graph).run(), 0)
+        text = self.prep()
+        self.assertIn("Written from the calendar as read", text)
+        self.assertIn("HTTP 502 Bad Gateway", text)
+        lines = text.splitlines()
+        self.assertTrue(lines[0].startswith("# [DRAFT]") and lines[1].startswith("*Written automatically"))
+        self.assertTrue(lines[3].startswith("> **Not everything could be read:**"))   # under the title, above Sources
+        self.assertIn("Some sources couldn't be read", self.claude.call_args.args[0])
+        self.assertEqual(graph.calls.count("calendar"), 1)   # not asked again for the diary
+        self.assertEqual(self.titles(), ["Microsoft 365 unavailable"])   # a degraded prep: notified at once, once
+
+    def test_calendar_down_with_no_copy_or_an_old_one_stops_the_run(self):
+        graph = FakeGraph(self.meetings("Sam Jones"), down={"calendar"})
+        with self.assertRaisesRegex(CalendarUnavailable, "no copy"):
+            self.engine(graph).run()
+        self.keep_calendar(graph.events, read=dt.datetime.now() - dt.timedelta(days=4))
+        with self.assertRaisesRegex(CalendarUnavailable, "over 3 days old"):
+            self.engine(graph).run()
+        self.assertIsNone(self.prep())
+        self.assertEqual(self.titles(), [])   # the watcher's "couldn't run" is the notice for this
+        self.assertEqual(json.loads(self.config.state_file.read_text(encoding="utf-8"))["outage"]["runs"], 2)
+
+    def test_the_copy_covers_only_the_days_it_read(self):
+        self.keep_calendar([])
+        data = json.loads(self.config.calendar_cache.read_text(encoding="utf-8"))
+        data["days"] = 1
+        self.config.calendar_cache.write_text(json.dumps(data), encoding="utf-8")
+        items, start, days = self.engine(FakeGraph(down={"calendar"})).calendar(dt.date.today(), 5)
+        self.assertEqual((start, days), (dt.date.today(), 1))
+
+    def test_email_or_teams_down_alone(self):
+        for label in ("email", "Teams"):
+            with self.subTest(label):
+                for old in self.config.output.glob("*.md"):
+                    old.unlink()
+                graph = FakeGraph(self.meetings("Sam Jones"), down={label})
+                self.assertEqual(self.engine(graph).run(), 0)
+                text = self.prep()
+                self.assertIn(f"Microsoft 365 unavailable (HTTP 502 Bad Gateway): {label} not read.", text)
+                self.assertNotIn("Written from the calendar", text)
+                self.assertNotIn("Prep failed", self.titles())
+
+    def test_diary_down_with_no_copy_still_writes_the_prep(self):
+        plan = {"start": "2026-11-11T11:00", "end": "11:30", "subject": "Sam 1:1", "decision": "prep", "kind": "report",
+                "with": "Sam Jones", "due": "2026-11-11T07:00", "file": "2026-11-11-sam-jones-prep.md", "previous": None}
+        written = self.engine(FakeGraph(down={"calendar"})).write(plan)
+        text = written[0].read_text(encoding="utf-8")
+        self.assertIn("Diary not read (HTTP 502 Bad Gateway).", text)
+        self.assertIn("Diary:\n(unavailable: HTTP 502 Bad Gateway)", self.claude.call_args.args[0])
+
+    def test_everything_down_asks_each_source_once_a_run(self):
+        events = self.meetings("Sam Jones", "Pat Boss")
+        self.keep_calendar(events)
+        graph = FakeGraph(events, down={"calendar", "email", "Teams"})
+        engine = self.engine(graph)
+        self.assertEqual(engine.run(), 0)
+        self.assertEqual(self.claude.call_count, 2)
+        self.assertEqual((graph.calls.count("email"), graph.calls.count("Teams"), graph.calls.count("calendar")), (1, 1, 1))
+        text = self.prep()
+        self.assertIn("email and Teams not read", text)
+        self.assertIn("Written from the calendar as read", text)
+        self.assertEqual(engine.degraded, 2)
+        self.assertEqual(self.titles(), ["Microsoft 365 unavailable"])   # one for the outage, not one per meeting
+
+    def test_a_partial_outage_and_its_end(self):
+        events = self.meetings("Sam Jones")
+        self.assertEqual(self.engine(FakeGraph(events, down={"email"})).run(), 0)
+        self.assertTrue(self.config.calendar_cache.exists())   # the calendar worked, so it was kept
+        self.assertEqual(self.titles(), ["Microsoft 365 unavailable"])
+        outage = lambda: json.loads(self.config.state_file.read_text(encoding="utf-8")).get("outage")   # noqa: E731
+        self.engine(FakeGraph(events)).run()   # prep exists, so email isn't read: not yet known to be back
+        self.assertEqual(outage()["what"], ["email"])
+        engine = self.engine(FakeGraph(events))
+        engine.read("email", lambda: "(none)", {})
+        engine.settle_outage()
+        self.assertIsNone(outage())
+        self.assertTrue(any("back" in line for line in self.logged))
+
+    def test_notified_on_the_third_run_then_not_again_until_a_new_outage(self):
+        self.keep_calendar([])
+        down = FakeGraph(down={"calendar"})
+        for _ in range(4):
+            self.engine(down).run()
+        self.assertEqual(self.titles(), ["Microsoft 365 unavailable"])
+        self.assertIn("cached calendar", self.notify.call_args.args[1][0])
+        self.engine(FakeGraph()).run()   # everything read: the outage is over
+        for _ in range(2):
+            self.engine(down).run()
+        self.assertEqual(len(self.titles()), 1)
+        self.engine(down).run()
+        self.assertEqual(len(self.titles()), 2)
+
+    def test_a_real_failure_is_still_notified_per_prep(self):
+        self.claude.side_effect = RuntimeError("Claude fell over")
+        self.assertEqual(self.engine(FakeGraph(self.meetings("Sam Jones"))).run(), 1)
+        self.assertEqual(self.titles(), ["Prep failed"])
+
+    def test_refresh_waits_while_email_is_down(self):
+        soon = (dt.datetime.now() + dt.timedelta(minutes=30)).replace(second=0, microsecond=0)
+        plan = {"start": soon.isoformat(timespec="minutes"), "end": "23:59", "subject": "Sam 1:1", "decision": "prep",
+                "kind": "report", "with": "Sam Jones", "file": "x-sam-jones-prep.md"}
+        (self.config.output / plan["file"]).write_text("# [DRAFT] Sam\n", encoding="utf-8")
+        with mock.patch.object(Engine, "upcoming", return_value=[plan]):
+            self.engine(FakeGraph(down={"email"})).refresh()
+            self.assertFalse(self.claude.called)
+            self.assertNotIn("refreshed", json.loads(self.config.state_file.read_text(encoding="utf-8")) if self.config.state_file.exists() else {})
+            with mock.patch("meeting_preps.engine.context.mail", return_value="- an email"):
+                self.engine(FakeGraph()).refresh()
+        self.assertTrue(self.claude.called)
 
 if __name__ == "__main__":
     unittest.main()

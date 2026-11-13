@@ -24,7 +24,7 @@ from m365_graph import Client, SignInNeeded
 from win_background import logger
 
 from . import __version__, autostart, config as cfg, context, planner
-from .engine import Engine
+from .engine import CalendarUnavailable, Engine
 
 
 def client(config: cfg.Config, interactive: bool | None = None) -> Client:
@@ -84,17 +84,21 @@ def main(argv: list | None = None) -> int:
             graph.token(config.scopes, interactive=True)
             print("Signed in.")
             return 0
+        engine = Engine(config, graph, log)
         if args.command == "plan":
             start = dt.date.fromisoformat(args.start) if args.start else dt.date.today()
-            plan = planner.plan_all(config, planner.events(graph, config, start, args.days), start, args.days)
+            plan = engine.plan_rows(start, args.days)
             print(json.dumps(plan, indent=2) if args.json else planner.show(plan, start, args.days))
+            if engine.calendar_from and not args.json:
+                print(f"\n(The calendar couldn't be read: planned from the copy read {engine.calendar_from:%a %d %b %H:%M}.)")
             return 0
         if args.command == "context":
-            print(f"## Email (14 days)\n{context.mail(graph, config, args.name, log=log)}\n\n"
-                  f"## Teams (14 days)\n{context.teams(graph, args.name, log=log)}\n\n"
-                  f"## Diary (7 days)\n{context.diary(graph, config, dt.date.today())}")
+            gaps = {}
+            mail = engine.read("email", lambda: context.mail(graph, config, args.name), gaps)
+            teams = engine.read("Teams", lambda: context.teams(graph, args.name), gaps)
+            print(f"## Email (14 days)\n{mail}\n\n## Teams (14 days)\n{teams}\n\n"
+                  f"## Diary (7 days)\n{context.diary(config, engine.calendar(dt.date.today(), 7)[0])}")
             return 0
-        engine = Engine(config, graph, log)
         if args.command == "run":
             return engine.run(args.dry_run)
         if args.command == "write":
@@ -110,6 +114,9 @@ def main(argv: list | None = None) -> int:
     except LookupError as error:
         log(str(error))
         return 2
+    except CalendarUnavailable as error:
+        log(str(error))
+        return 1
     return 0
 
 
