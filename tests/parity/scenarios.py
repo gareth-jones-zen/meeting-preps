@@ -341,7 +341,11 @@ def hand_scenarios() -> list:
     add("plan-week", [{"op": "plan", "start": "2026-11-09", "days": 14}, {"op": "plan", "start": "2026-11-11", "days": 1}],
         files={"work/preps/2026-11-11-sam-jones-prep.md": "x", "work/preps/archive/2026-10/2026-10-28-sam-jones-prep.md": "x",
                "work/preps/2026-11-04-SAM-JONES-PREP.md": "x"})
-    add("plan-week-field", [{"op": "plan", "start": "2026-11-09", "days": 5}],
+    # A file name in a subfolder: the previous prep is found by the last parts of its path, not the name alone.
+    add("plan-previous-in-a-subfolder", [{"op": "plan", "start": "2026-11-09", "days": 5}],
+        files={"work/preps/peers/2026-11-04-zoe-nunez-prep.md": "x", "work/preps/2026-11-05-zoe-nunez-prep.md": "x",
+               "work/preps/archive/2026-10/peers/2026-10-28-zoe-nunez-prep.md": "x", "work/preps/peers/old/2026-11-06-zoe-nunez-prep.md": "x"})
+    add("plan-week-field",[{"op": "plan", "start": "2026-11-09", "days": 5}],
         extra="", files={})
     # A person whose file uses {week}: the Python fails the plan with KeyError.
     out.append({"name": "plan-missing-field", "settings": settings().replace('file = "{date}-kim-lee-catchup-prep.md"', 'file = "{week}-kim.md"'),
@@ -415,6 +419,181 @@ def hand_scenarios() -> list:
     return out
 
 
+# ---- a Microsoft 365 outage (0.1.1) -----------------------------------------------------------------------------
+
+AUTO = "# [DRAFT] Sam Jones 1:1\n*Written automatically by meeting-preps.*\nSources: notes.\n\n## Items\n- one"
+HTTP = {"http": 502}
+
+
+def cache_file(read, start, days=8, events=None, timezone="GMT Standard Time", **extra):
+    data = {"read": read, "start": start, "days": days, "timezone": timezone,
+            "events": diary_fixture() if events is None else events}
+    data.update(extra)
+    return json.dumps(data)
+
+
+def outage_scenarios() -> list:
+    inbox, sent, folders = mail_fixture()
+    chats, messages = teams_fixture()
+    graph = {"calendar": diary_fixture(), "inbox": inbox, "sent": sent, "folders": folders, "chats": chats,
+             "chat_messages": messages}
+    out = []
+    replies = [AUTO, PREP, "# [DRAFT] Leads\n*Written automatically.*\n\n\n## A\n- b", "# [DRAFT] Kim\n\n## A",
+               AUTO + "\n===COMPANION===\n# [DRAFT] Pre-read\nWords."] * 3
+
+    def add(name, ops, now="2026-11-11T07:05:00", files=None, extra="", g=None, claude=None, processes=None, mtimes=None,
+            loose=False):
+        scenario = {"name": name, "settings": settings(extra), "files": {**FILES, **(files or {})}, "now": now,
+                    "graph": graph if g is None else g, "claude": list(replies if claude is None else claude),
+                    "processes": processes or {}, "mtimes": mtimes or {}, "ops": ops}
+        if loose:
+            scenario["loose_message"] = True
+        out.append(scenario)
+
+    errors = {"http502": {"http": 502}, "http503": {"http": 503}, "http504": {"http": 504}, "http429": {"http": 429},
+              "http401": {"http": 401}, "dns": {"dns": True}, "timeout": {"timeout": "timed out"},
+              "other": {"error": "connection reset by peer"}, "signin": {"signin": "Sign in again: run meeting-preps sign-in"}}
+    for label in ("email", "Teams"):
+        for ename, error in errors.items():
+            add(f"outage-{label}-{ename}", [{"op": "run", "down": {label: error}}, {"op": "run"},
+                                            {"op": "context", "name": "Sam Jones", "down": {label: error}}])
+    add("outage-email-and-teams", [{"op": "run", "down": {"email": HTTP, "Teams": {"timeout": "timed out"}}}])
+    add("outage-calendar-cached", [{"op": "plan", "start": "2026-11-11", "days": 5},
+                                   {"op": "run", "down": {"calendar": {"http": 504}}},
+                                   {"op": "run", "down": {"calendar": {"http": 504}}},
+                                   {"op": "plan", "start": "2026-11-12", "days": 3, "down": {"calendar": HTTP}},
+                                   {"op": "plan", "start": "2026-11-25", "days": 3, "down": {"calendar": HTTP}},
+                                   {"op": "context", "name": "Kim Lee", "down": {"calendar": HTTP}},
+                                   {"op": "run"}])
+    add("outage-calendar-no-copy", [{"op": "run", "down": {"calendar": {"http": 503}}},
+                                    {"op": "run", "dry_run": True, "down": {"calendar": {"http": 503}}},
+                                    {"op": "run", "down": {"calendar": {"dns": True}}},
+                                    {"op": "run", "down": {"calendar": {"http": 503}}},
+                                    {"op": "write_one", "day": "2026-11-12", "who": "Pat Boss", "down": {"calendar": HTTP}},
+                                    {"op": "context", "name": "Sam Jones", "down": {"calendar": HTTP}},
+                                    {"op": "plan", "start": "2026-11-11", "days": 2, "down": {"calendar": HTTP}},
+                                    {"op": "update", "paths": ["work/notes.md"], "down": {"calendar": HTTP}}])
+    old = cache_file("2026-11-07T07:00:00", "2026-11-07")
+    add("outage-calendar-old-copy", [{"op": "run", "down": {"calendar": HTTP}}], files={"state.calendar.json": old})
+    add("outage-calendar-old-copy-allowed", [{"op": "run", "down": {"calendar": HTTP}}], files={"state.calendar.json": old},
+        extra="calendar_cache_days = 5")
+    add("outage-calendar-half-day", [{"op": "run", "down": {"calendar": HTTP}}],
+        files={"state.calendar.json": cache_file("2026-11-10T17:03:00", "2026-11-10")}, extra="calendar_cache_days = 0.5")
+    add("outage-calendar-other-zone", [{"op": "run", "down": {"calendar": HTTP}}],
+        files={"state.calendar.json": cache_file("2026-11-11T06:00:00", "2026-11-11", timezone="UTC")})
+    add("outage-calendar-missing-events", [{"op": "run", "down": {"calendar": HTTP}}],
+        files={"state.calendar.json": json.dumps({"read": "2026-11-11T06:00:00", "timezone": "GMT Standard Time", "start": "2026-11-11"})})
+    add("outage-calendar-missing-read", [{"op": "run", "down": {"calendar": HTTP}}],
+        files={"state.calendar.json": json.dumps({"timezone": "GMT Standard Time"})})
+    add("outage-calendar-bad-json", [{"op": "run", "down": {"calendar": HTTP}}],
+        files={"state.calendar.json": "not json {"}, loose=True)
+    add("outage-calendar-bad-days", [{"op": "run", "down": {"calendar": HTTP}}],
+        files={"state.calendar.json": cache_file("2026-11-11T06:00:00", "2026-11-11", days="x")}, loose=True)
+    add("outage-calendar-short-copy", [{"op": "run", "down": {"calendar": HTTP}},
+                                       {"op": "plan", "start": "2026-11-11", "days": 5, "down": {"calendar": HTTP}},
+                                       {"op": "plan", "start": "2026-11-13", "days": 5, "down": {"calendar": HTTP}}],
+        files={"state.calendar.json": cache_file("2026-11-11T06:00:00", "2026-11-11", days=1)})
+    add("outage-calendar-signin", [{"op": "run", "down": {"calendar": {"signin": "Sign in again, at a console"}}},
+                                   {"op": "plan", "start": "2026-11-11", "days": 1, "down": {"calendar": {"signin": "x"}}}],
+        files={"state.calendar.json": cache_file("2026-11-11T06:00:00", "2026-11-11")})
+    add("outage-cache-elsewhere", [{"op": "run"}, {"op": "run", "down": {"calendar": HTTP}}], extra='calendar_cache = "cache/cal.json"')
+    add("outage-everything-down", [{"op": "run", "down": {"calendar": HTTP, "email": HTTP, "Teams": HTTP}}],
+        files={"state.calendar.json": cache_file("2026-11-10T17:03:00", "2026-11-10")})
+    later = diary_fixture() + [event("Sam 1:1", "2026-11-25T11:00", "2026-11-25T11:30", ["Sam Jones"]),
+                               event("Sam 1:1", "2026-11-26T11:00", "2026-11-26T11:30", ["Sam Jones"])]
+    add("outage-diary-only", [{"op": "write_one", "day": "2026-11-25", "who": "Sam Jones", "down": {"calendar": {"http": 502, "after": 1}}},
+                              {"op": "write_one", "day": "2026-11-26", "who": "Sam Jones", "down": {"calendar": {"dns": True, "after": 1}}}],
+        g={**graph, "calendar": later})
+    add("outage-diary-from-copy", [{"op": "write_one", "day": "2026-11-25", "who": "Sam Jones", "down": {"calendar": {"http": 502, "after": 1}}}],
+        g={**graph, "calendar": later}, files={"state.calendar.json": cache_file("2026-11-11T05:00:00", "2026-11-11")})
+    quiet = cache_file("2026-11-13T18:00:00", "2026-11-13", events=[])
+    down = {"calendar": HTTP}
+    add("outage-third-run", [{"op": "run", "down": down}] * 4 + [{"op": "run"}] + [{"op": "run", "down": down}] * 3,
+        now="2026-11-13T19:00:00", files={"state.calendar.json": quiet})
+    add("outage-third-run-no-copy", [{"op": "run", "down": down}] * 4, now="2026-11-13T19:00:00")
+    add("outage-since-yesterday", [{"op": "run", "down": {"email": HTTP}}],
+        files={"state.json": json.dumps({"refreshed": {"a.md@2026-11-10T10:00": "2026-11-10T09:10"},
+                                         "outage": {"since": "2026-11-10T16:00", "runs": 2, "notified": False,
+                                                    "what": ["email"], "why": "HTTP 503 Service Unavailable"}})})
+    add("outage-notified-then-back", [{"op": "run"}, {"op": "context", "name": "Sam Jones"}],
+        files={"state.json": json.dumps({"outage": {"since": "2026-11-11T06:00", "runs": 5, "notified": True,
+                                                    "what": ["Teams", "email"], "why": "HTTP 502 Bad Gateway"}})})
+    add("outage-limit", [{"op": "run", "down": {"email": HTTP}}], claude=[{"limit": "2026-11-11T19:00:00"}])
+    add("outage-a-real-failure", [{"op": "run"}], claude=[{"error": "Claude fell over"}] * 4)
+    add("outage-context-command", [{"op": "write_one", "day": "2026-11-10", "who": "Leads weekly"}], now="2026-11-09T15:00:00",
+        processes={"python status.py": {"raise": "no python"}, "tool --flag x": {"exit": 2, "stderr": "bad"}})
+    prep = {"work/preps/2026-11-11-sam-jones-prep.md": "# [DRAFT] Sam\n*auto*\n\n## Items\n- one\n"}
+    stamp = {"work/preps/2026-11-11-sam-jones-prep.md": "2026-11-11T07:00:00"}
+    add("outage-refresh-waits", [{"op": "refresh", "down": {"email": HTTP}}, {"op": "refresh", "down": {"Teams": {"dns": True}}},
+                                 {"op": "run", "down": {"email": HTTP}}, {"op": "refresh"}],
+        now="2026-11-11T10:30:00", files=prep, mtimes=stamp,
+        claude=["> **Update 10:30, from email and Teams** *(automatic)*\n> - **New.**"])
+    add("outage-refresh-calendar", [{"op": "refresh", "down": {"calendar": HTTP}}], now="2026-11-11T10:30:00",
+        files={**prep, "state.calendar.json": cache_file("2026-11-11T06:00:00", "2026-11-11")}, mtimes=stamp,
+        claude=["NO UPDATE"])
+    add("outage-update-from-copy", [{"op": "update", "paths": ["work/t.md"], "down": {"calendar": HTTP}}], now="2026-11-11T09:40:00",
+        files={**prep, "work/t.md": "**Sam Jones** 0:01\nHi\n", "state.calendar.json": cache_file("2026-11-11T06:00:00", "2026-11-11")},
+        mtimes=stamp, claude=["> **Update 09:40, from x** *(automatic)*\n> - **Moved.**"])
+    return out
+
+
+# ---- outages, at random ---------------------------------------------------------------------------------------
+
+def outage_fuzz(count: int, rng: random.Random) -> list:
+    """Refresh is off here (refresh_within_minutes = 0): a prep written in the scenario has the real clock's file
+    times, which would make the refresh's "since" differ between the two runs. The hand scenarios cover it."""
+    inbox, sent, folders = mail_fixture()
+    chats, messages = teams_fixture()
+    kinds = [{"http": c} for c in (502, 502, 503, 504, 429, 500)] + [{"dns": True}, {"timeout": "timed out"},
+                                                                       {"error": "reset"}, {"signin": "sign in"}]
+    replies = [AUTO, PREP, "# [DRAFT] X\n*Written automatically by meeting-preps.*\n\n## A", "no draft here",
+               {"error": "boom"}, AUTO + "\n===COMPANION===\n# [DRAFT] P\nw", "# [DRAFT] Only a title"]
+    out = []
+    for i in range(count):
+        day = rng.randint(9, 12)
+        now = f"2026-11-{day:02d}T{rng.randint(6, 18):02d}:{rng.choice([0, 5, 30, 55]):02d}:00"
+        files = dict(FILES)
+        if rng.random() < 0.6:
+            read_day = day - rng.choice([0, 0, 1, 2, 4])
+            files[rng.choice(["state.calendar.json", "c/cal.json"])] = cache_file(
+                f"2026-11-{read_day:02d}T{rng.randint(6, 18):02d}:00:00", f"2026-11-{read_day - rng.choice([0, 0, 1]):02d}",
+                days=rng.choice([1, 3, 8, 8]), events=diary_fixture() + random_calendar(rng, read_day, 8),
+                timezone=rng.choice(["GMT Standard Time"] * 9 + ["UTC"]))
+        if rng.random() < 0.3:
+            files["state.json"] = json.dumps({"outage": {"since": f"2026-11-{day - rng.choice([0, 1]):02d}T06:{rng.randint(10, 59)}",
+                                                          "runs": rng.randint(0, 4), "notified": rng.random() < 0.5,
+                                                          "what": rng.sample(["Teams", "calendar", "email"], rng.randint(1, 3)),
+                                                          "why": "HTTP 502 Bad Gateway"}})
+        extra = "refresh_within_minutes = 0\n" + rng.choice(["", "calendar_cache_days = 1", 'calendar_cache = "c/cal.json"',
+                                                             "calendar_cache_days = 2.5"])
+        ops = []
+        for _ in range(rng.randint(1, 5)):
+            down = {label: dict(rng.choice(kinds), **({"after": rng.randint(1, 2)} if rng.random() < 0.15 else {}))
+                    for label in ("calendar", "email", "Teams") if rng.random() < 0.4}
+            op = rng.choice(["run", "run", "run", "plan", "context", "write_one", "dry"])
+            if op == "run":
+                ops.append({"op": "run", "down": down})
+            elif op == "dry":
+                ops.append({"op": "run", "dry_run": True, "down": down})
+            elif op == "plan":
+                ops.append({"op": "plan", "start": f"2026-11-{rng.randint(day - 1, day + 10):02d}", "days": rng.choice([1, 2, 5, 8, 14]),
+                            "down": down})
+            elif op == "context":
+                ops.append({"op": "context", "name": rng.choice(["Sam Jones", "Kim Lee", None]), "topic": rng.choice([None, "Leads chat"]),
+                            "down": down})
+            else:
+                ops.append({"op": "write_one", "day": f"2026-11-{rng.randint(day, day + 3):02d}",
+                            "who": rng.choice(["Sam Jones", "Pat Boss", "Kim Lee", "Leads weekly", "Weekly note"]), "down": down})
+        out.append({"name": f"outage-fuzz-{i}", "settings": settings(extra), "files": files, "now": now,
+                    "graph": {"calendar": diary_fixture() + random_calendar(rng, day, 6), "inbox": inbox, "sent": sent,
+                              "folders": folders, "chats": chats, "chat_messages": messages},
+                    "claude": [rng.choice(replies) for _ in range(14)],
+                    "processes": {"python status.py": rng.choice([{"exit": 0, "stdout": "fine"}, {"exit": 1, "stderr": "no"},
+                                                                  {"raise": "missing"}])},
+                    "ops": ops})
+    return out
+
+
 # ---- context: random mail and chats ------------------------------------------------------------------------------
 
 ODD = ["", " ", "\u00a0", "\u2003", "\x1c", "\x1f", "\x85", "\u2028", "\r\n", "\n\n\n", "\t",
@@ -477,7 +656,8 @@ def main() -> int:
     count = int(sys.argv[2]) if len(sys.argv) > 2 else 300
     rng = random.Random(int(sys.argv[3]) if len(sys.argv) > 3 else 1)
     with open(target, "w", encoding="utf-8", newline="\n") as out:
-        for scenario in hand_scenarios() + planner_scenarios(count, rng) + context_scenarios(count // 3, rng):
+        for scenario in (hand_scenarios() + outage_scenarios() + planner_scenarios(count, rng)
+                         + context_scenarios(count // 3, rng) + outage_fuzz(count // 3, rng)):
             out.write(json.dumps(scenario, ensure_ascii=False) + "\n")
     return 0
 

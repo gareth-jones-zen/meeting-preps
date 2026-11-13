@@ -30,8 +30,9 @@ public static class Cli
         options: --config FILE (default %APPDATA%\meeting-preps\config.toml), --version
         """;
 
+    /// <summary>From the build: Directory.Build.props for a local build, or the release's -p:Version from its tag.</summary>
     public static string Version =>
-        typeof(Cli).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "1.0.0-dev";
+        typeof(Cli).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown";
 
     private sealed class UsageException(string message) : Exception(message);
 
@@ -153,22 +154,26 @@ public static class Cli
                 return 0;
             }
             var graph = host.Graph(config, null);
+            var engine = new Engine(config, graph, log, host);
             if (command == "plan")
             {
                 var start = positional.Count > 0 ? DateOnly.FromDateTime(PyTime.FromIso(positional[0])) : DateOnly.FromDateTime(host.Clock.Now());
-                var plan = Planner.PlanAll(config, Planner.Events(graph, config, start, planDays), start, planDays);
+                var plan = engine.PlanRows(start, planDays);
                 Print(host.Out, flags.Contains("--json") ? Planner.Json(plan) : Planner.Show(plan, start, planDays));
+                if (engine.CalendarFrom is { } from && !flags.Contains("--json"))
+                    Print(host.Out, $"\n(The calendar couldn't be read: planned from the copy read {PyTime.Strftime(from, "%a %d %b %H:%M")}.)");
                 return 0;
             }
             if (command == "context")
             {
                 var name = positional[0];
-                Print(host.Out, $"## Email (14 days)\n{Context.Mail(graph, config, name, host.Clock, log: log)}\n\n"
-                                + $"## Teams (14 days)\n{Context.Teams(graph, name, host.Clock, log: log)}\n\n"
-                                + $"## Diary (7 days)\n{Context.Diary(graph, config, DateOnly.FromDateTime(host.Clock.Now()))}");
+                var gaps = new OrderedDictionary<string, string>(StringComparer.Ordinal);
+                var mail = engine.Read("email", () => Context.Mail(graph, config, name, host.Clock, log: log), gaps);
+                var teams = engine.Read("Teams", () => Context.Teams(graph, name, host.Clock), gaps);
+                Print(host.Out, $"## Email (14 days)\n{mail}\n\n## Teams (14 days)\n{teams}\n\n"
+                                + $"## Diary (7 days)\n{Context.Diary(config, engine.Calendar(DateOnly.FromDateTime(host.Clock.Now()), 7).Items)}");
                 return 0;
             }
-            var engine = new Engine(config, graph, log, host);
             switch (command)
             {
                 case "run":
@@ -194,6 +199,11 @@ public static class Cli
         {
             log(error.Message);
             return 2;
+        }
+        catch (CalendarUnavailableException error)
+        {
+            log(error.Message);
+            return 1;
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {

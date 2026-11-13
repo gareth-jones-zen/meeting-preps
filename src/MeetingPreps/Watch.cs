@@ -9,7 +9,9 @@ namespace MeetingPreps;
 /// A long-running loop rather than scheduled triggers: when the laptop wakes, the loop simply carries on and catches up
 /// anything that came due while it slept. One watcher per settings file (a second exits at once, code 3); the
 /// settings are re-read each run; it never opens a browser; a failure is notified only after three in a row (a
-/// sign-in problem at once); it logs `alive` hourly. As the Python's watch.py.</summary>
+/// sign-in problem at once); it logs `alive` hourly. **A Microsoft 365 outage isn't a failure:** runs carry on from
+/// the cached calendar, preps say what they couldn't read, and the engine notifies once per outage. A run fails only
+/// when there's no calendar and no recent copy of it either, and that's the "couldn't run" notice.</summary>
 public static class Watch
 {
     public const int AlreadyRunning = 3;
@@ -64,11 +66,12 @@ public static class Watch
                     }
                     catch (Exception error) when (error is not OutOfMemoryException)
                     {
-                        log($"run failed: {error.GetType().Name}: {error.Message}");
+                        var name = PyMore.PyName(error);
+                        log($"run failed: {name}: {error.Message}");
                         streak++;
                         if (streak == 3)
-                            host.Notify("meeting-preps couldn't run", [Head($"{error.GetType().Name}: {error.Message}", 300), $"Log: {config.LogFile}"]);
-                        failing = error.GetType().Name;
+                            host.Notify("meeting-preps couldn't run", [Head($"{name}: {error.Message}", 300), $"Log: {config.LogFile}"]);
+                        failing = name;
                     }
                 }
             }

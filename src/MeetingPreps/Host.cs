@@ -6,6 +6,9 @@ using WinBackground;
 
 namespace MeetingPreps;
 
+/// <summary>A program ran out of time (Python's subprocess.TimeoutExpired).</summary>
+public sealed class ProcessTimeoutException(string message) : TimeoutException(message);
+
 /// <summary>A program meeting-preps starts: the after_write hook, or a kind's context command.</summary>
 public sealed record ProcessRequest(IReadOnlyList<string> Argv, string Cwd, string? Stdin,
     IReadOnlyDictionary<string, string> ExtraEnv, TimeSpan Timeout);
@@ -116,8 +119,8 @@ public sealed class ProcessRunner : IProcessRunner
             catch (InvalidOperationException)
             {
             }
-            throw new TimeoutException(
-                $"Command {PyMore.ListRepr(request.Argv)} timed out after {request.Timeout.TotalSeconds:0} seconds");
+            throw new ProcessTimeoutException(
+                $"Command '{PyMore.ListRepr(request.Argv)}' timed out after {request.Timeout.TotalSeconds:0} seconds");
         }
         process.WaitForExit();
         return new Completed(process.ExitCode, PyStr.UniversalNewlines(stdout.Result), PyStr.UniversalNewlines(stderr.Result));

@@ -101,7 +101,7 @@ public class MoreTests
         Assert.Equal(["meeting-preps couldn't run", "meeting-preps needs a sign-in"], notified);
         var log = File.ReadAllText(f.Config.LogFile);
         Assert.Contains("watching: a run every 5 min, 07:00-18:00 Mon-Fri", log);
-        Assert.Contains("run failed: IOException: a", log);
+        Assert.Contains("run failed: CalendarUnavailable: calendar unavailable (OSError: a), and there's no copy of an earlier read", log);
         Assert.Contains("sign-in needed: sign in", log);
     }
 
@@ -189,6 +189,18 @@ public class MoreTests
         Assert.Equal(2, Cli(["write", "2026-11-11"]).Code);
         Assert.Contains("meeting-preps config", Cli(["--help"]).Out);
         Assert.Equal(0, Cli(["--version"]).Code);
+    }
+
+    [Fact]
+    public void Version_comes_from_the_build()
+    {
+        var built = typeof(MeetingPreps.Cli).Assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .Cast<System.Reflection.AssemblyInformationalVersionAttribute>().Single().InformationalVersion;
+        Assert.Equal(built, MeetingPreps.Cli.Version);
+        Assert.Equal(typeof(MeetingPreps.Cli).Assembly.GetName().Version!.ToString(3), built.Split('-', '+')[0]);
+        Assert.DoesNotContain("+", built);   // no commit hash appended
+        Assert.Equal((0, built + Environment.NewLine, ""), Cli(["--version"]));
     }
 
     private sealed class Calendar(params JsonObject[] events) : IGraph

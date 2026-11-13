@@ -7,6 +7,8 @@ related: [teams-channel-notes-plan.md, mail-triage-plan.md, ../design-meeting-pr
 
 # Plan: meeting-preps ported to .NET 11 Native AOT
 
+*Brought up to the Python's 0.1.1 on 13 Nov 2026 (afternoon): see [Python 0.1.1, carried over](#python-011-carried-over). From then on the README describes the exe only; this file keeps the method and the parity record.*
+
 *Written 13 Nov 2026, overnight, after reading the whole tool (0.1.0: about 1,300 lines of Python in 8 modules, and 12 tests), the parts of m365-graph, win-background and claude-headless it uses, the EA's settings (`tools/meeting-preps.toml`), its extension scripts (`tools/preps/after-write.py`, `exco-status.py`) and the design doc. Nothing live was run or changed.*
 
 ## The goal
@@ -114,19 +116,55 @@ related: [teams-channel-notes-plan.md, mail-triage-plan.md, ../design-meeting-pr
 
 **4. Library catch-up (done 13 Nov 2026):** `Interim/` replaced by the consolidated PyCompat (`PyRegex`, `PyStr`, `PyTime`, `PyPath.Resolve`); the tests (233) and the parity suite rerun: 441 of 441 at seed 1, 6,707 of 6,707 at seed 2 through the AOT runner, and 1,515 of 1,515 on GJ's real settings (local, deleted after).
 
-**5. Live read-only checks (needs the laptop, not GJ):** `plan` over 35 days and `prompt` for every prep in a week, from both, on a copy of the token cache. No Claude, no writes.
+**5. Live read-only checks (needs the laptop, not GJ):** `plan` over 35 days and `prompt` for every prep in a week, from both, on a copy of the token cache. No Claude, no writes. *The 35-day plan was done on 13 Nov against 0.1.1 (below).*
 
-**6. Release pipeline:** as ai-keep-awake; the first release `v1.0.0-rc.1`.
+**6. Release pipeline (done 13 Nov 2026):** `.github/workflows/release.yml`, as mail-triage's: a `v*` tag tests, publishes both exes with `-p:Version` from the tag, zips them with the README, writes SHA256SUMS, attests provenance and creates the release (a hyphenated tag is a pre-release). The library is pinned to background-tools-lib `96f58c9` (main on 13 Nov). `build.yml` builds `main` only (and pull requests, and by hand).
 
-**7. Switch over (GJ):** after the Python trial has ended and the EA has moved from `draft-prep.py` to the Python meeting-preps (about 17 Nov), and **after that has run live for a week** (decision 2):
-1. `! python -m meeting_preps --config tools/meeting-preps.toml autostart off`;
+**7. Switch over (GJ):** **GJ decided on 13 Nov 2026 to move the EA straight from its old prep engine (`draft-prep.py`) to the exe**, rather than through the Python meeting-preps first (decision 2 as first written). The main session does the switch:
+1. stop the Python meeting-preps trial watcher (`! python -m meeting_preps --config tools/meeting-preps.toml autostart off`), and point `output` at the live folder;
 2. unzip to `%LOCALAPPDATA%\Programs\meeting-preps\`;
 3. `! meeting-preps.exe --config tools/meeting-preps.toml autostart on`;
-4. one EA commit: the doc-filer hook's `meeting-preps update` line, CLAUDE.md's commands;
+4. one EA commit: the doc-filer hook's `meeting-preps update` line (and draft-prep's dropped, keeping the weekly update), CLAUDE.md's commands;
 5. any jobs the Python queued in claude-headless's queue still name Python: let them drain first, or requeue them;
 6. rollback: the reverse; the state, log, preps and queue are shared, so nothing moves.
 
-**8. Tidy up:** README for the exe; the Python removed from `main` (tag `v0.1.0` keeps it); fixtures deleted.
+**8. Tidy up:** README for the exe (done 13 Nov); the Python, the oracle and the AOT parity runner removed from the branch (done 13 Nov; tags `v0.1.0` and `v0.1.1` keep the Python, and the branch's history keeps the oracle); fixtures deleted.
+
+## Python 0.1.1, carried over
+
+**What 0.1.1 changed** (ed00de1, tag `v0.1.1`, after Graph returned 502s all morning on 13 Nov 2026 and every prep failed): each run reads the calendar once for 8 days and keeps a copy (`calendar_cache`, default `<state>.calendar.json`), and plans from that copy when the calendar can't be read, if it's no older than `calendar_cache_days` (default 3), clipped to the days it covers; email, Teams, the diary and context commands each degrade on their own, and a source that failed isn't asked again in the run; a degraded prep has a line under its title saying what it lacked, and the prompt is told not to read a missing source as silence (`GAPS`); the pre-meeting refresh waits rather than checking half; one notification per outage (the first degraded prep, or the third run in a row), recorded in the state file beside `refreshed`; "Prep failed" stays for a prep's own failures, "couldn't run" for no calendar and no recent copy; a calendar sign-in problem still stops the run.
+
+**How it was carried:** the same functions, in the same order (`Engine.Read`, `Calendar`, `CachedCalendar`, `SaveCalendar`, `GapsLine`, `WithNote`, `SettleOutage`, `PlanRows`; `Context.Mail` and `Teams` now throw, `Diary` takes the events), the prompts regenerated from 0.1.1's `prompts.py` (now with `Gaps`), and the CLI's `plan` and `context` as 0.1.1's. The 10 new Python tests are in `OutageTests.cs` by name (class `Outage`).
+
+**The oracle was extended first, then the goldens regenerated from 0.1.1** with the same seeds:
+- the fake Graph can be down per source (`calendar`, `email`, `Teams`), for a whole scenario or one op, with an HTTP status, a failed name lookup, a timeout, a sign-in error or another error, optionally after N good calls;
+- the oracle's fixed clock now fixes `date.today()` too (0.1.1 reads it; without that the goldens depended on the real date);
+- 45 hand scenarios for the outage: each error kind for email and for Teams, the calendar from a copy, no copy, an old copy (and one allowed by `calendar_cache_days`), a copy in another zone, missing keys, bad JSON, a copy shorter than the plan, a sign-in, a copy kept elsewhere, everything down, the diary alone down (with and without a copy), notification on the third run then not until a new outage, an outage begun yesterday, the end of an outage, the usage limit, a real failure, a failing context command, the refresh waiting, updates from a copy;
+- an outage fuzz (a third of the planner count): random down sets per op, random copies (age, span, zone), random outage records, and sequences of run, dry run, plan, context and write. The refresh is off in the fuzz, because a prep written inside a scenario has the real clock's file times; the hand scenarios cover it.
+
+**Results, 13 Nov 2026:**
+
+| Check | Scenarios | Identical |
+|---|---|---|
+| Committed goldens (seed 1, 120 calendars) | 287 | 287 |
+| Fuzz through the Native AOT runner (seed 2, 5,000 calendars) | 8,418 | see below |
+| GJ's real settings (1,000 calendars, a write per person and series, and the same writes in an outage; local, deleted after) | 1,029 | 1,029 |
+| **Live:** `plan 2026-11-13 35`, Python 0.1.1 and the exe, on a copy of the token cache (GETs only) | 159 meetings (48 preps) | `--json` byte-identical; the text identical (byte-identical once Python's output is UTF-8, see below) |
+
+**What the fuzz found in the .NET port:** a person's `file` in a subfolder (`peers/{date}-x.md`) never found its previous prep, because the .NET matched the glob against the file name alone, where Python's `rglob` matches the pattern's parts against the path's last parts. Present since the first port; fixed, with a hand scenario. (GJ's settings have no such file name.)
+
+**Deliberate differences added:**
+- **Exception names.** Where a prep's first line or the log names an error (`TimeoutError: …`, a context command's `(OSError)`), the .NET uses the Python name for the errors it meets (`PyMore.PyName`): TimeoutError, TimeoutExpired, URLError, OSError, FileNotFoundError, PermissionError, KeyError, ValueError, RuntimeError, CalendarUnavailable; anything else keeps its .NET name. The message text after it is .NET's.
+- **An unusable copy of the calendar** says why in .NET's words where Python's would be its parser's (bad JSON); a missing key, the wrong zone, a bad date or day count read as Python's do. A copy whose `read` time has a UTC offset is unusable in .NET, where Python stopped with a TypeError.
+- **Replacing the state file and the calendar copy** is retried for half a second when another program holds the old file. Python's `os.replace` isn't, and failed four times in about 17,000 oracle runs with `[WinError 5] Access is denied` (below).
+- **Output encoding:** the exe always writes UTF-8; Python's `print` to a pipe or file writes the console code page (cp1252 here), so an en dash in `plan`'s text differs in bytes, not in text.
+
+**Python bugs found (not fixed in the Python, as agreed):**
+1. **`_save_state`'s `os.replace` fails now and then on Windows** with `[WinError 5] Access is denied` (something, probably the virus scanner, holding the file), and isn't retried, so the whole run fails; in the watcher that counts towards "couldn't run". `_save_calendar` catches its own, so a copy is just not kept. Seen 4 times in ~17,000 oracle runs.
+2. **The calendar copy is clipped with `end[:19] > lo`,** a date-time against a date, so an event ending at midnight at the start of the window (an all-day entry the day before) is kept, where Graph would leave it out. `plan` for a day after today then lists the day before's all-day entry as a skipped row; no prep decision changed in the checks. Carried for parity.
+3. **A copy whose `read` has a UTC offset** (hand-edited only) stops the run with a TypeError instead of being "unusable".
+
+**Quirk (e) is gone:** 0.1.1 fixed it upstream (a refresh whose email or Teams failed now waits instead of running Claude), so the .NET no longer carries it.
 
 ## Decisions for GJ
 
@@ -137,8 +175,8 @@ related: [teams-channel-notes-plan.md, mail-triage-plan.md, ../design-meeting-pr
 | 3 | How the live check runs | **Compare plans and prompts, not written preps**, so the check costs no Claude usage. A hidden `prompt` command is added for it. *Taken overnight* |
 | 4 | ClaudeHeadless and PyCompat | **Used from the library's `main`** (they landed during the night); only the helpers PyCompat lacked were interim copies, and those went on 13 Nov 2026 (bar a `finditer`, built from `PyRegex.Translate`). *Taken overnight* |
 | 5 | The queued job | **The queue names the exe**, so after the switch, queued jobs run the .NET version. Jobs queued by Python before the switch still run Python until they drain |
-| 6 | Python quirks | **Carried for parity, fixed after the switch:** (a) the refresh state never forgets old meetings, so it grows by one line per 1:1; (b) `run` returns 0 when it stops at the usage limit even if an earlier prep failed; (c) a person's file name using `{week}` fails at plan time, not load time; (d) `missing_series` checks only calendar rows, so two `weekly` slots on the same day both add a row; (e) a refresh whose email or Teams fetch failed still runs Claude (the "(unavailable…)" text isn't "(none"). *(a) to (e) carried overnight* |
-| 7 | Deliberate differences | An attendee with no name is treated as an empty name (Python crashed the whole plan); a user regex the two dialects read differently is refused at load (leave pattern) or skipped with a log line (a triage rule), rather than run differently; `--version` says the .NET version; argparse's wording is approximated with the same exit codes. *Taken overnight* |
+| 6 | Python quirks | **Carried for parity, fixed after the switch:** (a) the refresh state never forgets old meetings, so it grows by one line per 1:1; (b) `run` returns 0 when it stops at the usage limit even if an earlier prep failed; (c) a person's file name using `{week}` fails at plan time, not load time; (d) `missing_series` checks only calendar rows, so two `weekly` slots on the same day both add a row; ~~(e) a refresh whose email or Teams fetch failed still runs Claude~~ (fixed in the Python's 0.1.1); (f) the calendar copy keeps an event that ends at midnight at the start of the window (0.1.1, bug 2 above). *(a) to (d) carried overnight, (f) on 13 Nov* |
+| 7 | Deliberate differences | An attendee with no name is treated as an empty name (Python crashed the whole plan); a user regex the two dialects read differently is refused at load (leave pattern) or skipped with a log line (a triage rule), rather than run differently; `--version` says the .NET version, from the build (`AssemblyInformationalVersion`: `Directory.Build.props` locally, the tag in a release); argparse's wording is approximated with the same exit codes. *Taken overnight*; the 0.1.1 ones are listed above |
 | 8 | Python changes during the port | **Freeze features until the switch;** bug fixes mirrored with a test. The tool changed three times in its first two days |
 | 9 | Builds | **x64 only**, unsigned, as the other ports |
 

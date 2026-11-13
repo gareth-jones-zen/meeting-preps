@@ -69,6 +69,11 @@ public sealed class Fixture : IDisposable
     public List<string> Replies { get; } = [];
     public List<string> Reports { get; } = [];
     public List<string> Log { get; } = [];
+    public List<(string Title, IReadOnlyList<string> Lines)> Notes { get; } = [];
+
+    /// <summary>When set, every Claude run answers this (as a mock's return_value), or throws Failure.</summary>
+    public string? Always { get; set; }
+    public Exception? Failure { get; set; }
     public Clock Clock { get; set; }
 
     public Fixture(string? settings = null, DateTime? now = null)
@@ -86,6 +91,10 @@ public sealed class Fixture : IDisposable
         public JsonObject Run(IReadOnlyList<string> command, string prompt, string cwd, TimeSpan timeout)
         {
             f.Prompts.Add(prompt);
+            if (f.Failure is not null)
+                throw f.Failure;
+            if (f.Always is not null)
+                return new JsonObject { ["result"] = f.Always, ["num_turns"] = 1, ["session_id"] = "s" };
             var reply = f.Replies.Count > 0 ? f.Replies[0] : "NO UPDATE";
             if (f.Replies.Count > 0)
                 f.Replies.RemoveAt(0);
@@ -112,7 +121,7 @@ public sealed class Fixture : IDisposable
     public PrepsHost Host() => new()
     {
         Clock = Clock, Claude = new Claude(this), Processes = new Processes(this), Retry = (_, _, _) => true,
-        Notify = (_, _) => { }, LockPrefix = "mp-test-", Out = TextWriter.Null, Err = TextWriter.Null,
+        Notify = (title, lines) => Notes.Add((title, lines)), LockPrefix = "mp-test-", Out = TextWriter.Null, Err = TextWriter.Null,
     };
 
     public Engine Engine(IGraph? graph = null) => new(Config, graph ?? new NoGraph(), Log.Add, Host());

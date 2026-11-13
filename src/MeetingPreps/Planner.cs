@@ -60,8 +60,16 @@ public static class Planner
         if (!Directory.Exists(config.History))
             return null;
         var cutoff = PyTime.Iso(before);
+        // rglob("a/b*") is glob("**/a/b*"): the pattern's parts against the last parts of the path, one by one. A file
+        // name in a subfolder ("peers/{date}-x.md") has more than one part (found by the 0.1.1 fuzz, 13 Nov 2026).
+        var parts = glob.Split('/', '\\').Where(p => p.Length > 0 && p != ".").ToArray();
+        var root = config.History.TrimEnd('\\', '/').Length + 1;
         var found = Walk(config.History)
-            .Where(p => Glob(Path.GetFileName(p), glob))
+            .Where(p =>
+            {
+                var path = p[root..].Split('\\', '/');
+                return path.Length >= parts.Length && parts.Select((g, i) => Glob(path[path.Length - parts.Length + i], g)).All(m => m);
+            })
             .Where(p => DatePrefix(Path.GetFileName(p)) && string.CompareOrdinal(PyStr.Head(Path.GetFileName(p), 10), cutoff) < 0)
             .OrderBy(p => Path.GetFileName(p), PyStr.Order)
             .ToList();

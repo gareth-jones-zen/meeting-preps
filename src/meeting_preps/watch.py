@@ -10,6 +10,9 @@ was never caught up (October 2026).
 - **It never opens a browser.** A lapsed sign-in is logged and notified once, and it keeps trying.
 - **A failure is notified only after three in a row** (a sign-in problem at once), and once until a run
   succeeds. A single dropped connection that the next run gets past isn't something to act on (11 Nov 2026).
+- **A Microsoft 365 outage isn't a failure** (0.1.1): runs carry on from the cached calendar, preps say what
+  they couldn't read, and the engine notifies once per outage. A run fails only when there's no calendar and
+  no recent copy of it either, and that's the "couldn't run" notice.
 - **It logs `alive` hourly.**
 """
 

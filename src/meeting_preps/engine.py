@@ -16,6 +16,17 @@ reaches the meeting only if someone happens to look.
 **Claude runs headless in the workspace with read-only tools;** this module writes the files. At the usage
 limit the job is queued (claude-headless) and notified once. after_write is given a JSON report for every
 file written: {"type": "prep" | "update" | "refresh", "meeting", "start", "files": [...], "from"?}.
+
+**A Microsoft 365 outage doesn't stop preps (0.1.1, after 13 Nov 2026, when Graph gave 502s all morning and
+every prep failed).** Each run reads the calendar once, for the next CALENDAR_DAYS days, and keeps a copy
+(calendar_cache). When the read fails, the run plans from that copy, if it's no older than
+calendar_cache_days, for the days it covers. Email, Teams, the diary and the context commands each degrade on
+their own, and a source that has failed isn't asked again in the same run (each failed Graph call costs a
+minute or more of retries). A prep written without something says so in a line under its title. **One
+notification per outage**, when the first degraded prep is written or the third run in a row meets it, and
+none per meeting; the outage ends once everything that failed has been read again. A sign-in problem with the
+calendar still stops the run, so the watcher asks for a sign-in; so does a calendar that's down with no
+recent copy, which the watcher's "couldn't run" covers.
 """
 
 from __future__ import annotations
@@ -27,12 +38,37 @@ import pathlib
 import re
 import subprocess
 import sys
+import urllib.error
 
 from claude_headless import LimitReached, queue, run as claude_run
+from m365_graph import SignInNeeded
 from win_background import NO_WINDOW, exclusive, key, notify
 
 from . import context, planner, prompts
 from .config import LOCAL, Config
+
+CALENDAR_DAYS = 8   # one read a run covers the plan (to the next working day) and the diary (7 days)
+
+
+class CalendarUnavailable(RuntimeError):
+    """The calendar couldn't be read and there's no recent copy to plan from."""
+
+
+def reason(error: BaseException) -> str:
+    """Why a Graph call failed, short enough for a prep's first lines and a notification."""
+    if isinstance(error, urllib.error.HTTPError):
+        return f"HTTP {error.code} {error.reason}".strip()
+    if isinstance(error, SignInNeeded):
+        return "sign-in needed"
+    text = str(error)
+    if "getaddrinfo" in text or "NameResolution" in text:
+        return "no network (name lookup failed)"
+    return f"{type(error).__name__}: {text}"[:120]
+
+
+def and_list(items) -> str:
+    items = list(items)
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
 def fill(text: str, **values) -> str:
@@ -45,6 +81,172 @@ def fill(text: str, **values) -> str:
 class Engine:
     def __init__(self, config: Config, graph, log=print):
         self.config, self.graph, self.log = config, graph, log
+        # This run's view of Graph: what failed (label -> why), what worked, when it first failed, the calendar
+        # read once for the run, when the cached copy it fell back to was read (None if live), and how many
+        # preps were written without something.
+        self.down: dict = {}
+        self.ok: set = set()
+        self.first_failure: dt.datetime | None = None
+        self._week: tuple | None = None
+        self.calendar_from: dt.datetime | None = None
+        self.degraded = 0
+
+    # ---- Graph, and what to do when it's down -------------------------------------------------------
+
+    def unavailable(self, label: str, error: BaseException) -> str:
+        why = reason(error)
+        self.down.setdefault(label, why)
+        self.first_failure = self.first_failure or dt.datetime.now()
+        self.log(f"  {label} unavailable: {why}")
+        return why
+
+    def read(self, label: str, fetch, gaps: dict) -> str:
+        """One context source (email, Teams). A failure becomes "(unavailable: why)" in the prompt and an entry
+        in gaps, never an error; a source that has failed this run isn't asked again."""
+        if label in self.down:
+            gaps[label] = self.down[label]
+            return f"(unavailable: {self.down[label]})"
+        try:
+            text = fetch()
+        except Exception as error:
+            gaps[label] = self.unavailable(label, error)
+            return f"(unavailable: {gaps[label]})"
+        self.ok.add(label)
+        return text
+
+    def _save_calendar(self, start: dt.date, days: int, items: list) -> None:
+        cache = self.config.calendar_cache
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            temp = cache.with_name(cache.name + ".tmp")
+            temp.write_text(json.dumps({"read": dt.datetime.now().isoformat(timespec="seconds"), "start": start.isoformat(),
+                                        "days": days, "timezone": self.config.timezone, "events": items}), encoding="utf-8")
+            os.replace(temp, cache)
+        except OSError as error:
+            self.log(f"  couldn't keep a copy of the calendar: {error}")
+
+    def _cached_calendar(self, why: str) -> tuple:
+        """(items, first day, days) from the last good read, or CalendarUnavailable saying why not."""
+        try:
+            data = json.loads(self.config.calendar_cache.read_text(encoding="utf-8"))
+            read = dt.datetime.fromisoformat(data["read"])
+            if data.get("timezone") != self.config.timezone:
+                raise ValueError("it's in a different time zone")
+            found = data["events"], dt.date.fromisoformat(data["start"]), int(data["days"])
+        except FileNotFoundError:
+            raise CalendarUnavailable(f"calendar unavailable ({why}), and there's no copy of an earlier read") from None
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise CalendarUnavailable(f"calendar unavailable ({why}), and the copy of an earlier read is unusable ({error})") from None
+        if dt.datetime.now() - read > dt.timedelta(days=self.config.calendar_cache_days):
+            raise CalendarUnavailable(f"calendar unavailable ({why}), and the last good read ({read:%a %d %b %H:%M}) is over "
+                                      f"{self.config.calendar_cache_days:g} days old")
+        if self.calendar_from is None:
+            self.log(f"  planning from the calendar as read {read:%a %d %b %H:%M}: meeting changes since may be missing")
+        self.calendar_from = read
+        return found
+
+    def calendar(self, start: dt.date, days: int) -> tuple:
+        """The calendar's events from start for days, as (items, start, days). Live if Graph answers, else from the
+        last good read, clipped to the days that read covered, so nothing is planned for days it never saw."""
+        today = dt.date.today()
+        standard = today <= start and start + dt.timedelta(days=days) <= today + dt.timedelta(days=CALENDAR_DAYS)
+        if standard and self._week is not None:
+            items, first, span = self._week
+        else:
+            first, span = (today, CALENDAR_DAYS) if standard else (start, days)
+            items = None
+            if "calendar" not in self.down:
+                try:
+                    items = planner.events(self.graph, self.config, first, span)
+                    self.ok.add("calendar")
+                    if standard:
+                        self._save_calendar(first, span, items)
+                except SignInNeeded:
+                    raise   # yours to fix, not an outage: the watcher asks for a sign-in
+                except Exception as error:
+                    self.unavailable("calendar", error)
+            if items is None:
+                items, first, span = self._cached_calendar(self.down["calendar"])
+            if standard:
+                self._week = (items, first, span)
+        begin = max(start, first)
+        end = min(start + dt.timedelta(days=days), first + dt.timedelta(days=span))
+        if end <= begin:
+            return [], start, 0
+        lo, hi = begin.isoformat(), end.isoformat()
+        inside = [e for e in items if e["start"]["dateTime"][:10] < hi and e["end"]["dateTime"][:19] > lo]
+        return inside, begin, (end - begin).days
+
+    def gaps_line(self, gaps: dict, failed_commands: list) -> str:
+        """The line under a prep's title saying what it was written without, or "" if nothing."""
+        parts = []
+        missing = {k: v for k, v in gaps.items() if k != "calendar"}
+        if missing:
+            parts.append(f"Microsoft 365 unavailable ({'; '.join(sorted(set(missing.values())))}): "
+                         f"{and_list(sorted(missing, key=str.lower))} not read.")
+        if self.calendar_from:
+            parts.append(f"Written from the calendar as read {self.calendar_from:%a %d %b %H:%M} (Microsoft 365 unavailable: "
+                         f"{self.down.get('calendar', 'unknown')}); meeting changes since may be missing.")
+        elif "calendar" in gaps:
+            parts.append(f"Diary not read ({gaps['calendar']}).")
+        parts += [f"Context command {c} failed." for c in failed_commands]
+        return ("> **Not everything could be read:** " + " ".join(parts)) if parts else ""
+
+    @staticmethod
+    def with_note(text: str, note: str) -> str:
+        """The note under the title and its italic line, above everything else."""
+        lines = text.split("\n")
+        at = next((i + 1 for i, line in enumerate(lines[:6]) if line.startswith("*Written automatically")), 1)
+        rest = lines[at:]
+        while rest and not rest[0].strip():
+            rest = rest[1:]
+        return "\n".join(lines[:at] + ["", note, ""] + rest)
+
+    # ---- the outage, across runs -------------------------------------------------------------------
+
+    def _state(self) -> dict:
+        try:
+            return json.loads(self.config.state_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _save_state(self, **changes) -> None:
+        """Change some keys of the state file, keeping the rest; replaced whole, so never half-written."""
+        state = self._state()
+        for name, value in changes.items():
+            if value is None:
+                state.pop(name, None)
+            else:
+                state[name] = value
+        self.config.state_file.parent.mkdir(parents=True, exist_ok=True)
+        temp = self.config.state_file.with_name(self.config.state_file.name + ".tmp")
+        temp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        os.replace(temp, self.config.state_file)
+
+    def settle_outage(self, ran: bool = True) -> None:
+        """After a run: start, carry on or end the outage record, and notify once per outage. ran=False is a run
+        that couldn't plan at all: counted, but the watcher's "couldn't run" is the notice for that."""
+        outage = self._state().get("outage")
+        if not self.down:
+            if outage and set(outage.get("what", [])) <= self.ok:
+                since = dt.datetime.fromisoformat(outage["since"])
+                self.log(f"Microsoft 365 is back (unavailable since {since:%a %H:%M})")
+                self._save_state(outage=None)
+            return
+        outage = outage or {"since": (self.first_failure or dt.datetime.now()).isoformat(timespec="minutes"),
+                            "runs": 0, "notified": False}
+        outage["runs"] += 1
+        outage["what"] = sorted(set(outage.get("what", [])) | set(self.down))
+        outage["why"] = next(iter(self.down.values()))
+        if ran and not outage["notified"] and (self.degraded or outage["runs"] >= 3):
+            since = dt.datetime.fromisoformat(outage["since"])
+            when = f"{since:%H:%M}" if since.date() == dt.date.today() else f"{since:%a %d %b %H:%M}"
+            cached = " and the cached calendar" if self.calendar_from else ""
+            notify("Microsoft 365 unavailable", [f"Since {when} ({outage['why']}); preps are being written from the repo{cached}.",
+                                                 f"Log: {self.config.log_file}"])
+            self.log(f"notified: Microsoft 365 unavailable since {when}")
+            outage["notified"] = True
+        self._save_state(outage=outage)
 
     # ---- the pieces ------------------------------------------------------------------------------
 
@@ -78,9 +280,11 @@ class Engine:
         except Exception as error:
             self.log(f"  after_write failed: {error}")
 
-    def context_commands(self, kind, plan: dict) -> str:
+    def context_commands(self, kind, plan: dict, failed: list | None = None) -> str:
         """Each command's output is added to the kind's rules. It's told which meeting: MEETING_PREPS_START
-        (ISO), MEETING_PREPS_SUBJECT and MEETING_PREPS_WITH (empty for a series)."""
+        (ISO), MEETING_PREPS_SUBJECT and MEETING_PREPS_WITH (empty for a series). A command that fails or exits
+        non-zero is added to failed, for the prep's first lines; it never stops the prep."""
+        failed = [] if failed is None else failed
         out = []
         env = {**os.environ, "MEETING_PREPS_START": plan["start"], "MEETING_PREPS_SUBJECT": plan["subject"],
                "MEETING_PREPS_WITH": plan.get("with") or ""}
@@ -92,13 +296,19 @@ class Engine:
                     out.append(done.stdout.strip())
                 if done.returncode:
                     self.log(f"  context command {command[:2]} exited {done.returncode}: {done.stderr.strip()[:200]}")
+                    failed.append(f"{pathlib.Path(command[-1]).name} (exit {done.returncode})")
             except Exception as error:
                 self.log(f"  context command {command[:2]} failed: {str(error)[:200]}")
+                failed.append(f"{pathlib.Path(command[-1]).name} ({type(error).__name__})")
         return "\n".join(out)
 
+    def plan_rows(self, start: dt.date, days: int) -> list:
+        """Every meeting's decision (prep, unsure, skip), from the live calendar or its last good copy."""
+        items, start, days = self.calendar(start, days)
+        return planner.plan_all(self.config, items, start, days) if days else []
+
     def plans(self, start: dt.date, days: int) -> list:
-        items = planner.events(self.graph, self.config, start, days)
-        return [p for p in planner.plan_all(self.config, items, start, days) if p["decision"] == "prep"]
+        return [p for p in self.plan_rows(start, days) if p["decision"] == "prep"]
 
     def upcoming(self, now: dt.datetime) -> list:
         """Preps for meetings from now to the end of the next working day."""
@@ -116,25 +326,33 @@ class Engine:
         """Write one prep, and its companion if its kind has one. Returns the files written."""
         config, now = self.config, dt.datetime.now()
         kind = config.kinds[plan["kind"]]
+        gaps, failed = {}, []
         if plan.get("series"):
             series = config.series[plan["series"]]
-            name, teams = f"the {plan['subject']} group", context.teams(self.graph, None, topic=series.get("chat"), log=self.log)
+            name = f"the {plan['subject']} group"
+            teams = self.read("Teams", lambda: context.teams(self.graph, None, topic=series.get("chat")), gaps)
             kind_text = fill(kind.describe, name=plan["subject"], slug="")
             if plan.get("absorbed"):
                 kind_text += f" (with {plan['absorbed']['subject']} at {plan['absorbed']['start'][11:]}–{plan['absorbed']['end']} folded in)"
             if plan.get("not_attending"):
                 kind_text += (f". {config.owner} isn't attending this one ({plan['not_attending']}): write it as what they "
                               "might raise or pass on through someone who is there, short")
-            mail = context.mail(self.graph, config, None, days=14, log=self.log)
+            mail = self.read("email", lambda: context.mail(self.graph, config, None, days=14), gaps)
             short = plan["subject"]
         else:
             person = config.people[plan["with"]]
             name = plan["with"]
             kind_text = fill(kind.describe, name=name, slug=person.get("slug", ""))
-            teams = context.teams(self.graph, name, log=self.log)
-            mail = context.mail(self.graph, config, name, days=14, log=self.log)
+            teams = self.read("Teams", lambda: context.teams(self.graph, name), gaps)
+            mail = self.read("email", lambda: context.mail(self.graph, config, name, days=14), gaps)
             short = name.split()[0]
-        extra = self.context_commands(kind, plan)
+        extra = self.context_commands(kind, plan, failed)
+        try:
+            diary = context.diary(config, self.calendar(now.date(), 7)[0])
+        except Exception as error:   # no calendar and no recent copy, or a sign-in: the prep goes ahead without it
+            gaps["calendar"] = self.down.get("calendar") or reason(error)
+            diary = f"(unavailable: {gaps['calendar']})"
+        note = self.gaps_line(gaps, failed)
         rules = fill(kind.rules, name=name, slug=(config.people.get(plan.get("with") or "") or {}).get("slug", ""))
         companion = ""
         if plan.get("companion"):
@@ -144,13 +362,18 @@ class Engine:
             now=f"{now:%A %d %B %Y %H:%M}", kind_rules=rules + (f"\n\n{extra}" if extra else ""),
             previous=plan.get("previous") or "(none yet)", history=config.relative(config.history), name=name,
             short=short, house_rules=prompts.house(config.house_rules), companion=companion,
-            diary=context.diary(self.graph, config, now.date()), teams=teams, mail=mail)
+            gaps=prompts.GAPS.format(note=note.removeprefix("> ")) if note else "",
+            diary=diary, teams=teams, mail=mail)
         self.log(f"writing {plan['file']}")
         text = self.claude(prompt, timeout=3600)
         prep_text, _, companion_text = text.partition("===COMPANION===")
         prep_text = prep_text[prep_text.find("# [DRAFT]"):].strip() if "# [DRAFT]" in prep_text else ""
         if not prep_text:
             raise RuntimeError("the reply wasn't a prep: " + text[:200])
+        if note:
+            prep_text = self.with_note(prep_text, note)
+            self.degraded += 1
+            self.log(f"  written without some sources: {note.removeprefix('> **Not everything could be read:** ')}")
         written = []
         path = config.output / plan["file"]
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -171,7 +394,13 @@ class Engine:
 
     def run(self, dry_run: bool = False) -> int:
         now = dt.datetime.now()
-        due = [p for p in self.upcoming(now) if dt.datetime.fromisoformat(p["due"]) <= now
+        try:
+            upcoming = self.upcoming(now)
+        except Exception:
+            if not dry_run:
+                self.settle_outage(ran=False)
+            raise
+        due = [p for p in upcoming if dt.datetime.fromisoformat(p["due"]) <= now
                and not (self.config.output / p["file"]).exists()]
         self.log(f"run{' (dry run)' if dry_run else ''}: {len(due)} due")
         failures = 0
@@ -186,12 +415,14 @@ class Engine:
                     written = self.write(plan)
             except LimitReached as limit:
                 self.limited(["run"], limit)
+                self.settle_outage()
                 return 0
             except TimeoutError:
                 # Another run (a `write` by hand, say) is writing it now: not a failure, and the next run checks.
                 self.log(f"  {plan['file']} is being written by another run; leaving it")
                 continue
             except Exception as error:
+                # Graph failures don't get here (they make a degraded prep), so this is the prep's own: Claude, or the file.
                 failures += 1
                 self.log(f"  FAILED {plan['file']}: {error}")
                 notify("Prep failed", [plan["subject"], f"Log: {self.config.log_file}"])
@@ -199,6 +430,8 @@ class Engine:
             self.after_write({"type": "prep", "meeting": plan["subject"], "start": plan["start"],
                               "files": [self.config.relative(w) for w in written]})
         failures += self.refresh(dry_run)
+        if not dry_run:
+            self.settle_outage()
         return 1 if failures else 0
 
     # ---- keeping it current ----------------------------------------------------------------------
@@ -259,14 +492,10 @@ class Engine:
         return 1 if failures else 0
 
     def _refreshed(self) -> dict:
-        try:
-            return json.loads(self.config.state_file.read_text(encoding="utf-8")).get("refreshed", {})
-        except (OSError, json.JSONDecodeError):
-            return {}
+        return self._state().get("refreshed", {})
 
     def _save_refreshed(self, done: dict) -> None:
-        self.config.state_file.parent.mkdir(parents=True, exist_ok=True)
-        self.config.state_file.write_text(json.dumps({"refreshed": done}, indent=2), encoding="utf-8")
+        self._save_state(refreshed=done)
 
     def refresh(self, dry_run: bool = False) -> int:
         config, now = self.config, dt.datetime.now()
@@ -285,8 +514,12 @@ class Engine:
             if dry_run:
                 self.log(f"refresh: would check {prep.name} for messages since {written:%a %H:%M}")
                 continue
-            mail = context.mail(self.graph, config, plan["with"], since_time=written, log=self.log)
-            teams = context.teams(self.graph, plan["with"], since_time=written, log=self.log)
+            gaps = {}
+            mail = self.read("email", lambda: context.mail(self.graph, config, plan["with"], since_time=written), gaps)
+            teams = self.read("Teams", lambda: context.teams(self.graph, plan["with"], since_time=written), gaps)
+            if gaps:   # not marked done: the next run tries again, while the meeting is still within the hour
+                self.log(f"refresh: {prep.name} waits, {and_list(gaps)} unavailable")
+                continue
             done[key_] = now.isoformat(timespec="minutes")
             if mail.startswith("(none") and teams.startswith("(none"):
                 self.log(f"refresh: nothing new for {prep.name} since {written:%H:%M}")

@@ -94,6 +94,12 @@ def main() -> int:
                               "chat_messages": messages},
                     "claude": ["# [DRAFT] Prep\n\nBody\n===COMPANION===\n# [DRAFT] Pre-read\nWords."], "processes": processes,
                     "ops": [{"op": "write_one", "day": day, "who": who}]})
+        out.append({"name": f"real-write-outage-{i}", "settings": settings, "files": files, "now": "2026-11-09T15:00:00",
+                    "graph": {"calendar": calendar, "inbox": inbox, "sent": sent, "folders": folders, "chats": chats,
+                              "chat_messages": messages,
+                              "down": {"email": {"http": 502}, "Teams": {"timeout": "timed out"}, "calendar": {"http": 504, "after": 1}}},
+                    "claude": ["# [DRAFT] Prep\n*Written automatically by meeting-preps.*\n\nBody\n===COMPANION===\n# [DRAFT] Pre-read\nWords."],
+                    "processes": processes, "ops": [{"op": "write_one", "day": day, "who": who}]})
         del entry
     with target.open("w", encoding="utf-8", newline="\n") as handle:
         for scenario in out:

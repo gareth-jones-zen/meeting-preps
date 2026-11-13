@@ -1,13 +1,18 @@
-"""The Python oracle: runs scenarios through the Python meeting-preps (src/meeting_preps, the 0.1.0 code kept on this
-branch) with every outside thing faked, and records what it did, for the .NET port to match.
+"""The Python oracle: runs scenarios through the Python meeting-preps (src/meeting_preps, the 0.1.1 code put on this
+branch while the goldens are made) with every outside thing faked, and records what it did, for the .NET port to match.
 
     python -I tests/parity/oracle.py <scenarios.jsonl> <goldens.jsonl>
 
 A scenario (one JSON object a line):
     name, settings (TOML text), files ({relative path: text}), mtimes ({relative path: local "yyyy-mm-ddTHH:MM:SS"}),
-    now (local, Europe/London), graph ({calendar, inbox, sent, folders, chats, chat_messages, get}), claude (replies in
+    now (local, Europe/London), graph ({calendar, inbox, sent, folders, chats, chat_messages, get, down}), claude (replies in
     order: text, {"limit": local time} or {"error": text}), processes ({argv joined by spaces: {exit, stdout, stderr}
-    or {raise: text}}), ops ([{op: plan|run|write_one|update|refresh|context|hook_paths|load, ...}]).
+    or {raise: text}}), ops ([{op: plan|run|write_one|update|refresh|context|hook_paths|load, down?, ...}]).
+
+graph.down (and an op's own "down", which replaces it for that op) is a Microsoft 365 outage: {label: error}, label
+"calendar" (calendarView), "Teams" (anything with "chats") or "email" (the rest), and error one of {"http": code},
+{"dns": true}, {"timeout": text}, {"signin": text} or {"error": text}, any with "after": n (that label's first n
+calls in the op succeed).
 
 The result: what each op returned, every prompt sent to Claude (with its command line), every Graph request, every
 program started (with its stdin and the MEETING_PREPS_ variables), the log, notifications, queued retries, and every
@@ -20,7 +25,10 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import http
 import json
+import socket
+import urllib.error
 import os
 import pathlib
 import shutil
@@ -34,6 +42,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from claude_headless import LimitReached  # noqa: E402
+from m365_graph import SignInNeeded  # noqa: E402
 
 from meeting_preps import cli, config as cfg, context, engine as eng, planner  # noqa: E402
 
@@ -42,12 +51,33 @@ class FixtureMissing(Exception):
     pass
 
 
+def outage_error(spec: dict, url: str) -> BaseException:
+    if "http" in spec:
+        return urllib.error.HTTPError(url, spec["http"], http.HTTPStatus(spec["http"]).phrase, {}, None)
+    if spec.get("dns"):
+        return urllib.error.URLError(socket.gaierror(11001, "getaddrinfo failed"))
+    if "timeout" in spec:
+        return TimeoutError(spec["timeout"])
+    if "signin" in spec:
+        return SignInNeeded(spec["signin"])
+    return OSError(spec["error"])
+
+
 class FakeGraph:
     def __init__(self, fx: dict, record: list):
         self.fx, self.record = fx, record
+        self.down = fx.get("down", {})
+        self.calls: dict = {}
+
+    def _outage(self, url):
+        label = "calendar" if "calendarView" in url else "Teams" if "chats" in url else "email"
+        self.calls[label] = self.calls.get(label, 0) + 1
+        if label in self.down and self.calls[label] > self.down[label].get("after", 0):
+            raise outage_error(self.down[label], url)
 
     def get(self, url, **_):
         self.record.append(["GET", url, {}])
+        self._outage(url)
         fx = self.fx
         if url in fx.get("get", {}):
             return copy.deepcopy(fx["get"][url])
@@ -65,6 +95,7 @@ class FakeGraph:
 
     def pages(self, url, headers=None, **_):
         self.record.append(["PAGES", url, dict(headers or {})])
+        self._outage(url)
         fx = self.fx
         if url.startswith("/me/calendarView?") and "calendar" in fx:
             query = urllib.parse.parse_qs(url.split("?", 1)[1])
@@ -89,7 +120,12 @@ def fixed_dt(now_local: dt.datetime):
             if tz is None:
                 return cls.fromisoformat(now_local.isoformat())
             return now_local.astimezone(tz)
-    return types.SimpleNamespace(datetime=FakeDateTime, date=dt.date, timedelta=dt.timedelta, timezone=dt.timezone,
+
+    class FakeDate(dt.date):
+        @classmethod
+        def today(cls):
+            return cls.fromisoformat(now_local.date().isoformat())
+    return types.SimpleNamespace(datetime=FakeDateTime, date=FakeDate, timedelta=dt.timedelta, timezone=dt.timezone,
                                  time=dt.time)
 
 
@@ -157,10 +193,13 @@ def run(scenario: dict) -> dict:
             os.utime(tmp / name, (stamp, stamp))
         (tmp / "config.toml").write_bytes(scenario["settings"].encode("utf-8"))
         graph = FakeGraph(scenario.get("graph", {}), record["graph"])
+        standing = graph.down
         log = record["log"].append
         config = None
         for op in scenario.get("ops", []):
             out: dict = {"op": op["op"]}
+            graph.down = op["down"] if "down" in op else standing
+            graph.calls = {}
             try:
                 if op["op"] == "load":
                     config = cfg.load(tmp / "config.toml")
@@ -170,10 +209,12 @@ def run(scenario: dict) -> dict:
                 else:
                     config = config or cfg.load(tmp / "config.toml")
                     engine = eng.Engine(config, graph, log)
-                    if op["op"] == "plan":
+                    if op["op"] == "plan":   # as cli.py's plan
                         start = dt.date.fromisoformat(op["start"])
-                        plan = planner.plan_all(config, planner.events(graph, config, start, op["days"]), start, op["days"])
-                        out["result"] = {"json": json.dumps(plan, indent=2), "show": planner.show(plan, start, op["days"])}
+                        plan = engine.plan_rows(start, op["days"])
+                        out["result"] = {"json": json.dumps(plan, indent=2), "show": planner.show(plan, start, op["days"]),
+                                         "from": (f"(The calendar couldn't be read: planned from the copy read "
+                                                  f"{engine.calendar_from:%a %d %b %H:%M}.)") if engine.calendar_from else None}
                     elif op["op"] == "run":
                         out["result"] = engine.run(op.get("dry_run", False))
                     elif op["op"] == "write_one":
@@ -182,11 +223,13 @@ def run(scenario: dict) -> dict:
                         out["result"] = engine.update([str(tmp / p) for p in op["paths"]])
                     elif op["op"] == "refresh":
                         out["result"] = engine.refresh(op.get("dry_run", False))
-                    elif op["op"] == "context":
-                        out["result"] = {
-                            "mail": context.mail(graph, config, op.get("name"), log=log),
-                            "teams": context.teams(graph, op.get("name"), topic=op.get("topic"), log=log),
-                            "diary": context.diary(graph, config, now_local.date())}
+                    elif op["op"] == "context":   # as cli.py's context, with a topic too
+                        gaps = {}
+                        result = {
+                            "mail": engine.read("email", lambda: context.mail(graph, config, op.get("name")), gaps),
+                            "teams": engine.read("Teams", lambda: context.teams(graph, op.get("name"), topic=op.get("topic")), gaps)}
+                        out["result"] = result
+                        result["diary"] = context.diary(config, engine.calendar(now_local.date(), 7)[0])
                     else:
                         raise SystemExit(f"unknown op {op['op']}")
             except Exception as error:   # noqa: BLE001 - recorded for comparison
@@ -218,6 +261,7 @@ def describe(config: cfg.Config) -> dict:
         "msal_cache": str(config.msal_cache) if config.msal_cache else None, "timezone": config.timezone,
         "scopes": config.scopes, "watch": [config.watch_every_minutes, list(config.watch_hours), config.watch_weekdays],
         "log_file": str(config.log_file), "state_file": str(config.state_file), "aliases": config.aliases,
+        "calendar_cache": str(config.calendar_cache), "calendar_cache_days": f"{config.calendar_cache_days:g}",
         "kinds": {name: {"describe": k.describe, "rules": k.rules, "companion": k.companion,
                          "companion_rules": k.companion_rules, "every_transcript": k.every_transcript,
                          "update_rules": k.update_rules, "context_commands": k.context_commands}

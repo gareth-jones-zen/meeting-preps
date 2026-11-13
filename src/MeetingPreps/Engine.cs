@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using ClaudeHeadless;
@@ -14,6 +15,9 @@ public sealed class LockTimeoutException(string message) : Exception(message);
 /// <summary>No meeting that day gets a prep with that person or series (Python's LookupError).</summary>
 public sealed class NoSuchMeetingException(string message) : Exception(message);
 
+/// <summary>The calendar couldn't be read and there's no recent copy to plan from (Python's CalendarUnavailable).</summary>
+public sealed class CalendarUnavailableException(string message) : Exception(message);
+
 /// <summary>Writing preps, and keeping them current, as the Python's engine.py.
 ///
 /// **run** writes every prep that's due and not yet written (so a run missed while the laptop slept is caught up by
@@ -21,9 +25,22 @@ public sealed class NoSuchMeetingException(string message) : Exception(message);
 /// the next working day) against transcripts that have just landed, and adds a dated "Update HH:MM" block to each
 /// one they affect. **refresh**: once per 1:1, in the hour before it, email and Teams with that person since the
 /// prep was written are checked. **Claude runs headless in the workspace with read-only tools;** this writes the
-/// files. after_write is given a JSON report for every file written.</summary>
+/// files. after_write is given a JSON report for every file written.
+///
+/// **A Microsoft 365 outage doesn't stop preps.** Each run reads the calendar once, for the next CalendarDays days,
+/// and keeps a copy (calendar_cache). When the read fails, the run plans from that copy, if it's no older than
+/// calendar_cache_days, for the days it covers. Email, Teams, the diary and the context commands each degrade on
+/// their own, and a source that has failed isn't asked again in the same run (each failed Graph call costs a minute
+/// or more of retries). A prep written without something says so in a line under its title. **One notification per
+/// outage**, when the first degraded prep is written or the third run in a row meets it, and none per meeting; the
+/// outage ends once everything that failed has been read again. A sign-in problem with the calendar still stops the
+/// run, so the watcher asks for a sign-in; so does a calendar that's down with no recent copy, which the watcher's
+/// "couldn't run" covers.</summary>
 public sealed class Engine(Config config, IGraph graph, Action<string> log, PrepsHost host)
 {
+    /// <summary>One read a run covers the plan (to the next working day) and the diary (7 days).</summary>
+    public const int CalendarDays = 8;
+
     private static readonly PyRegex Fence = PyRegex.Get(@"^```(?:markdown|md)?\s*\n|\n```\s*$");
     private static readonly PyRegex BlockAt = PyRegex.Get(@"(?m)^(> \*\*Update |## )");
     // re.findall with a group. PyCompat's PyRegex has no finditer yet, so the pattern is translated by PyRegex and
@@ -33,6 +50,308 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
 
     public Config Config { get; } = config;
     private Clock Clock => host.Clock;
+
+    // This run's view of Graph: what failed (label -> why, in the order it failed), what worked, when it first
+    // failed, the calendar read once for the run, when the cached copy it fell back to was read (null if live), and
+    // how many preps were written without something.
+    private readonly OrderedDictionary<string, string> down = new(StringComparer.Ordinal);
+    private readonly HashSet<string> ok = new(StringComparer.Ordinal);
+    private DateTime? firstFailure;
+    private (List<JsonObject> Items, DateOnly First, int Span)? week;
+
+    /// <summary>When the cached copy of the calendar this run planned from was read; null if it read it live.</summary>
+    public DateTime? CalendarFrom { get; private set; }
+
+    /// <summary>How many preps this run wrote without something.</summary>
+    public int Degraded { get; private set; }
+
+    // ---- Graph, and what to do when it's down -----------------------------------------------------------------
+
+    private string Unavailable(string label, Exception error)
+    {
+        var why = PyMore.Reason(error);
+        down.TryAdd(label, why);
+        firstFailure ??= Clock.Now();
+        log($"  {label} unavailable: {why}");
+        return why;
+    }
+
+    /// <summary>One context source (email, Teams). A failure becomes "(unavailable: why)" in the prompt and an entry in
+    /// gaps, never an error; a source that has failed this run isn't asked again.</summary>
+    public string Read(string label, Func<string> fetch, OrderedDictionary<string, string> gaps)
+    {
+        if (down.TryGetValue(label, out var why))
+        {
+            gaps[label] = why;
+            return $"(unavailable: {why})";
+        }
+        string text;
+        try
+        {
+            text = fetch();
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            gaps[label] = Unavailable(label, error);
+            return $"(unavailable: {gaps[label]})";
+        }
+        ok.Add(label);
+        return text;
+    }
+
+    /// <summary>Replaces a file with one written beside it (os.replace). Retried briefly, as another program (a virus
+    /// scanner, say) can hold the old one for a moment.</summary>
+    private static void Replace(string temp, string target)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                File.Move(temp, target, overwrite: true);
+                return;
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException && attempt < 5)
+            {
+                Thread.Sleep(100 * attempt);
+            }
+        }
+    }
+
+    private void SaveCalendar(DateOnly start, int days, List<JsonObject> items)
+    {
+        var cache = Config.CalendarCache;
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(cache)!);
+            var temp = cache + ".tmp";
+            var data = new JsonObject
+            {
+                ["read"] = PyTime.Iso(Clock.Now(), "seconds"), ["start"] = PyTime.Iso(start), ["days"] = PyJson.Int(days),
+                ["timezone"] = Config.TimeZone, ["events"] = new JsonArray(items.Select(e => (JsonNode)e.DeepClone()).ToArray()),
+            };
+            PyStr.WriteText(temp, PyJson.Dump(data));
+            Replace(temp, cache);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            log($"  couldn't keep a copy of the calendar: {error.Message}");
+        }
+    }
+
+    /// <summary>Python's KeyError, TypeError or ValueError while reading the copy: it's unusable.</summary>
+    private sealed class UnusableException(string message) : Exception(message);
+
+    private static bool IsString(JsonNode? node) => node is JsonValue v && v.GetValueKind() == System.Text.Json.JsonValueKind.String;
+
+    /// <summary>(items, first day, days) from the last good read, or CalendarUnavailableException saying why not.</summary>
+    private (List<JsonObject> Items, DateOnly First, int Span) CachedCalendar(string why)
+    {
+        DateTime read;
+        (List<JsonObject>, DateOnly, int) found;
+        try
+        {
+            var data = PyJson.Parse(PyJson.ReadStrict(Config.CalendarCache));
+            JsonNode? Key(string key) => data switch
+            {
+                JsonObject o => o.TryGetPropertyValue(key, out var v) ? v : throw new UnusableException(Py.ReprString(key)),
+                JsonArray => throw new UnusableException("list indices must be integers or slices, not str"),
+                _ when IsString(data) => throw new UnusableException("string indices must be integers, not 'str'"),
+                _ => throw new UnusableException($"'{PyType(data)}' object is not subscriptable"),
+            };
+            var readNode = Key("read");
+            read = IsString(readNode) ? PyTime.FromIso(readNode!.GetValue<string>()) : throw new UnusableException("fromisoformat: argument must be str");
+            var zone = data is JsonObject d && IsString(d["timezone"]) ? d["timezone"]!.GetValue<string>() : null;
+            if (zone != Config.TimeZone)
+                throw new UnusableException("it's in a different time zone");
+            var events = Key("events");
+            var startNode = Key("start");
+            var startText = IsString(startNode) ? startNode!.GetValue<string>() : throw new UnusableException("fromisoformat: argument must be str");
+            if (!DateOnly.TryParseExact(startText, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var start))
+                throw new UnusableException($"Invalid isoformat string: {Py.ReprString(startText)}");
+            var daysNode = Key("days");
+            var days = IsString(daysNode) ? PyStr.Int(daysNode!.GetValue<string>()) : Py.Int(daysNode);
+            found = (((JsonArray)events!).Select(e => (JsonObject)e!).ToList(), start, checked((int)days));
+        }
+        catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
+        {
+            throw new CalendarUnavailableException($"calendar unavailable ({why}), and there's no copy of an earlier read");
+        }
+        catch (Exception error) when (error is UnusableException or IOException or UnauthorizedAccessException or FormatException
+                                          or System.Text.Json.JsonException or DecoderFallbackException or OverflowException
+                                          or InvalidCastException or InvalidOperationException)
+        {
+            throw new CalendarUnavailableException($"calendar unavailable ({why}), and the copy of an earlier read is unusable ({error.Message})");
+        }
+        if (Clock.Now() - read > TimeSpan.FromDays(Config.CalendarCacheDays))
+            throw new CalendarUnavailableException($"calendar unavailable ({why}), and the last good read ({F(read, "%a %d %b %H:%M")}) is over "
+                                                   + $"{PyMore.FormatG(Config.CalendarCacheDays)} days old");
+        if (CalendarFrom is null)
+            log($"  planning from the calendar as read {F(read, "%a %d %b %H:%M")}: meeting changes since may be missing");
+        CalendarFrom = read;
+        return found;
+    }
+
+    private static string PyType(JsonNode? node) => node switch
+    {
+        null => "NoneType",
+        JsonValue v => v.GetValueKind() switch
+        {
+            System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False => "bool",
+            System.Text.Json.JsonValueKind.Number => v.ToJsonString().IndexOfAny(['.', 'e', 'E']) >= 0 ? "float" : "int",
+            _ => "str",
+        },
+        _ => "object",
+    };
+
+    /// <summary>The calendar's events from start for days, as (items, start, days). Live if Graph answers, else from the
+    /// last good read, clipped to the days that read covered, so nothing is planned for days it never saw.</summary>
+    public (List<JsonObject> Items, DateOnly Start, int Days) Calendar(DateOnly start, int days)
+    {
+        var today = DateOnly.FromDateTime(Clock.Now());
+        var standard = today <= start && start.AddDays(days) <= today.AddDays(CalendarDays);
+        List<JsonObject> items;
+        DateOnly first;
+        int span;
+        if (standard && week is { } kept)
+            (items, first, span) = kept;
+        else
+        {
+            (first, span) = standard ? (today, CalendarDays) : (start, days);
+            List<JsonObject>? got = null;
+            if (!down.ContainsKey("calendar"))
+            {
+                try
+                {
+                    got = Planner.Events(graph, Config, first, span);
+                    ok.Add("calendar");
+                    if (standard)
+                        SaveCalendar(first, span, got);
+                }
+                catch (M365Graph.SignInNeededException)
+                {
+                    throw;   // yours to fix, not an outage: the watcher asks for a sign-in
+                }
+                catch (Exception error) when (error is not OutOfMemoryException)
+                {
+                    Unavailable("calendar", error);
+                }
+            }
+            if (got is null)
+                (got, first, span) = CachedCalendar(down["calendar"]);
+            items = got;
+            if (standard)
+                week = (items, first, span);
+        }
+        var begin = start > first ? start : first;
+        var end = start.AddDays(days) < first.AddDays(span) ? start.AddDays(days) : first.AddDays(span);
+        if (end <= begin)
+            return ([], start, 0);
+        string lo = PyTime.Iso(begin), hi = PyTime.Iso(end);
+        var inside = items.Where(e => string.CompareOrdinal(PyStr.Head(Py.Str(e["start"]!["dateTime"]), 10), hi) < 0
+                                      && string.CompareOrdinal(PyStr.Head(Py.Str(e["end"]!["dateTime"]), 19), lo) > 0).ToList();
+        return (inside, begin, end.DayNumber - begin.DayNumber);
+    }
+
+    /// <summary>The line under a prep's title saying what it was written without, or "" if nothing.</summary>
+    public string GapsLine(OrderedDictionary<string, string> gaps, IReadOnlyList<string> failedCommands)
+    {
+        var parts = new List<string>();
+        var missing = gaps.Where(g => g.Key != "calendar").ToList();
+        if (missing.Count > 0)
+            parts.Add($"Microsoft 365 unavailable ({string.Join("; ", missing.Select(m => m.Value).Distinct().Order(PyStr.Order))}): "
+                      + $"{PyMore.AndList(missing.Select(m => m.Key).OrderBy(PyStr.Lower, PyStr.Order).ToList())} not read.");
+        if (CalendarFrom is { } from)
+            parts.Add($"Written from the calendar as read {F(from, "%a %d %b %H:%M")} (Microsoft 365 unavailable: "
+                      + $"{down.GetValueOrDefault("calendar", "unknown")}); meeting changes since may be missing.");
+        else if (gaps.TryGetValue("calendar", out var calendar))
+            parts.Add($"Diary not read ({calendar}).");
+        parts.AddRange(failedCommands.Select(c => $"Context command {c} failed."));
+        return parts.Count > 0 ? "> **Not everything could be read:** " + string.Join(" ", parts) : "";
+    }
+
+    /// <summary>The note under the title and its italic line, above everything else.</summary>
+    public static string WithNote(string text, string note)
+    {
+        var lines = text.Split('\n').ToList();
+        var at = 1;
+        for (var i = 0; i < Math.Min(6, lines.Count); i++)
+            if (lines[i].StartsWith("*Written automatically", StringComparison.Ordinal))
+            {
+                at = i + 1;
+                break;
+            }
+        var rest = lines.Skip(at).ToList();
+        while (rest.Count > 0 && PyStr.Strip(rest[0]).Length == 0)
+            rest.RemoveAt(0);
+        return string.Join("\n", lines.Take(at).Concat(["", note, ""]).Concat(rest));
+    }
+
+    // ---- the outage, across runs ----------------------------------------------------------------------------
+
+    private JsonObject State()
+    {
+        try
+        {
+            return PyJson.Parse(PyStr.ReadText(Config.StateFile)) as JsonObject ?? [];
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Text.Json.JsonException
+                                          or DecoderFallbackException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>Change one key of the state file (null removes it), keeping the rest; replaced whole, so never
+    /// half-written.</summary>
+    private void SaveState(string name, JsonNode? value)
+    {
+        var state = State();
+        if (value is null)
+            state.Remove(name);
+        else
+            state[name] = value.DeepClone();
+        Directory.CreateDirectory(Path.GetDirectoryName(Config.StateFile)!);
+        var temp = Config.StateFile + ".tmp";
+        PyStr.WriteText(temp, PyJson.Dump(state, 2));
+        Replace(temp, Config.StateFile);
+    }
+
+    /// <summary>After a run: start, carry on or end the outage record, and notify once per outage. ran=false is a run
+    /// that couldn't plan at all: counted, but the watcher's "couldn't run" is the notice for that.</summary>
+    public void SettleOutage(bool ran = true)
+    {
+        var outage = State()["outage"] is JsonObject o && o.Count > 0 ? (JsonObject)o.DeepClone() : null;
+        List<string> What() => outage?["what"] is JsonArray what ? what.Select(Py.Str).ToList() : [];
+        if (down.Count == 0)
+        {
+            if (outage is not null && What().All(ok.Contains))
+            {
+                var since = PyTime.FromIso(Py.Str(outage["since"]));
+                log($"Microsoft 365 is back (unavailable since {F(since, "%a %H:%M")})");
+                SaveState("outage", null);
+            }
+            return;
+        }
+        outage ??= new JsonObject
+        {
+            ["since"] = PyTime.Iso(firstFailure ?? Clock.Now(), "minutes"), ["runs"] = PyJson.Int(0), ["notified"] = false,
+        };
+        var runs = Py.Int(outage["runs"]) + 1;
+        outage["runs"] = PyJson.Int(runs);
+        outage["what"] = new JsonArray(What().Union(down.Keys).Distinct().Order(PyStr.Order).Select(w => (JsonNode)JsonValue.Create(w)!).ToArray());
+        var why = down.GetAt(0).Value;
+        outage["why"] = why;
+        if (ran && !Py.Truthy(outage["notified"]) && (Degraded > 0 || runs >= 3))
+        {
+            var since = PyTime.FromIso(Py.Str(outage["since"]));
+            var when = DateOnly.FromDateTime(since) == DateOnly.FromDateTime(Clock.Now()) ? F(since, "%H:%M") : F(since, "%a %d %b %H:%M");
+            var cached = CalendarFrom is not null ? " and the cached calendar" : "";
+            host.Notify("Microsoft 365 unavailable", [$"Since {when} ({why}); preps are being written from the repo{cached}.", $"Log: {Config.LogFile}"]);
+            log($"notified: Microsoft 365 unavailable since {when}");
+            outage["notified"] = true;
+        }
+        SaveState("outage", outage);
+    }
 
     /// <summary>{name} and {slug} in your own rules text, without str.format, which a stray brace in prose would break.
     /// Each is replaced in turn, so a value can itself be filled by a later one (as the Python's replace did).</summary>
@@ -128,9 +447,11 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
     }
 
     /// <summary>Each command's output is added to the kind's rules. It's told which meeting: MEETING_PREPS_START (ISO),
-    /// MEETING_PREPS_SUBJECT and MEETING_PREPS_WITH (empty for a series).</summary>
-    public string ContextCommands(Kind kind, PlanRow plan)
+    /// MEETING_PREPS_SUBJECT and MEETING_PREPS_WITH (empty for a series). A command that fails or exits non-zero is
+    /// added to failed, for the prep's first lines; it never stops the prep.</summary>
+    public string ContextCommands(Kind kind, PlanRow plan, List<string>? failed = null)
     {
+        failed ??= [];
         var output = new List<string>();
         var env = new Dictionary<string, string>
         {
@@ -145,18 +466,28 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
                 if (PyStr.Strip(done.StandardOutput).Length > 0)
                     output.Add(PyStr.Strip(done.StandardOutput));
                 if (done.ExitCode != 0)
+                {
                     log($"  context command {label} exited {done.ExitCode}: {PyStr.Head(PyStr.Strip(done.StandardError), 200)}");
+                    failed.Add($"{Planner.BaseName(command[^1])} (exit {done.ExitCode})");
+                }
             }
             catch (Exception error) when (error is not OutOfMemoryException)
             {
                 log($"  context command {label} failed: {PyStr.Head(PyMore.ErrorText(error), 200)}");
+                failed.Add($"{Planner.BaseName(command[^1])} ({PyMore.PyName(error)})");
             }
         }
         return string.Join("\n", output);
     }
 
-    public List<PlanRow> Plans(DateOnly start, int days) =>
-        Planner.PlanAll(Config, Planner.Events(graph, Config, start, days), start, days).Where(p => p.Decision == "prep").ToList();
+    /// <summary>Every meeting's decision (prep, unsure, skip), from the live calendar or its last good copy.</summary>
+    public List<PlanRow> PlanRows(DateOnly start, int days)
+    {
+        var (items, first, span) = Calendar(start, days);
+        return span != 0 ? Planner.PlanAll(Config, items, first, span) : [];
+    }
+
+    public List<PlanRow> Plans(DateOnly start, int days) => PlanRows(start, days).Where(p => p.Decision == "prep").ToList();
 
     /// <summary>Preps for meetings from now to the end of the next working day.</summary>
     public List<PlanRow> Upcoming(DateTime now)
@@ -175,23 +506,25 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
     // ---- writing ------------------------------------------------------------------------------------------
 
     /// <summary>The prompt for one prep, gathering its context (Graph, context commands) as the Python did, in the
-    /// same order.</summary>
-    public string PrepPrompt(PlanRow plan, DateTime now)
+    /// same order, and the line saying what it lacked ("" if nothing).</summary>
+    public (string Prompt, string Note) PrepPrompt(PlanRow plan, DateTime now)
     {
         var kind = Config.Kinds[plan.Kind!];
+        var gaps = new OrderedDictionary<string, string>(StringComparer.Ordinal);
+        var failed = new List<string>();
         string name, kindText, teams, mail, shortName;
         if (plan.Series is not null)
         {
             var series = Config.Series(plan.Series)!;
             name = $"the {plan.Subject} group";
-            teams = Context.Teams(graph, null, Clock, topic: series.Chat, log: log);
+            teams = Read("Teams", () => Context.Teams(graph, null, Clock, topic: series.Chat), gaps);
             kindText = Fill(kind.Describe, ("name", plan.Subject), ("slug", ""));
             if (plan.Absorbed is { } absorbed)
                 kindText += $" (with {absorbed.Subject} at {absorbed.Start[11..]}–{absorbed.End} folded in)";
             if (plan.NotAttending is { Length: > 0 } notAttending)
                 kindText += $". {Config.Owner} isn't attending this one ({notAttending}): write it as what they "
                             + "might raise or pass on through someone who is there, short";
-            mail = Context.Mail(graph, Config, null, Clock, days: 14, log: log);
+            mail = Read("email", () => Context.Mail(graph, Config, null, Clock, days: 14, log: log), gaps);
             shortName = plan.Subject;
         }
         else
@@ -199,11 +532,24 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
             var person = Config.Person(plan.With!)!;
             name = plan.With!;
             kindText = Fill(kind.Describe, ("name", name), ("slug", person.Slug));
-            teams = Context.Teams(graph, name, Clock, log: log);
-            mail = Context.Mail(graph, Config, name, Clock, days: 14, log: log);
+            var who = name;
+            teams = Read("Teams", () => Context.Teams(graph, who, Clock), gaps);
+            mail = Read("email", () => Context.Mail(graph, Config, who, Clock, days: 14, log: log), gaps);
             shortName = PyStr.Split(name)[0];
         }
-        var extra = ContextCommands(kind, plan);
+        var extra = ContextCommands(kind, plan, failed);
+        string diary;
+        try
+        {
+            diary = Context.Diary(Config, Calendar(DateOnly.FromDateTime(now), 7).Items);
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            // no calendar and no recent copy, or a sign-in: the prep goes ahead without it
+            gaps["calendar"] = down.TryGetValue("calendar", out var why) && why.Length > 0 ? why : PyMore.Reason(error);
+            diary = $"(unavailable: {gaps["calendar"]})";
+        }
+        var note = GapsLine(gaps, failed);
         var rules = Fill(kind.Rules, ("name", name), ("slug", Config.Person(plan.With ?? "")?.Slug ?? ""));
         var companion = "";
         if (plan.Companion is { Length: > 0 })
@@ -218,12 +564,13 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
             ["previous"] = plan.Previous is { Length: > 0 } previous ? previous : "(none yet)",
             ["history"] = Config.Relative(Config.History), ["name"] = name, ["short"] = shortName,
             ["house_rules"] = House(Config.HouseRules), ["companion"] = companion,
+            ["gaps"] = note.Length > 0 ? PyMore.Format(PromptText.Gaps, new Dictionary<string, string> { ["note"] = RemovePrefix(note, "> ") }) : "",
+            ["diary"] = diary, ["teams"] = teams, ["mail"] = mail,
         };
-        values["diary"] = Context.Diary(graph, Config, DateOnly.FromDateTime(now));
-        values["teams"] = teams;
-        values["mail"] = mail;
-        return PyMore.Format(PromptText.Prep, values);
+        return (PyMore.Format(PromptText.Prep, values), note);
     }
+
+    private static string RemovePrefix(string text, string prefix) => text.StartsWith(prefix, StringComparison.Ordinal) ? text[prefix.Length..] : text;
 
     /// <summary>prompts.house(): the house rules, introduced, or nothing.</summary>
     public static string House(string rules) =>
@@ -233,7 +580,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
     public List<string> Write(PlanRow plan)
     {
         var now = Clock.Now();
-        var prompt = PrepPrompt(plan, now);
+        var (prompt, note) = PrepPrompt(plan, now);
         log($"writing {plan.File}");
         var text = Claude(prompt, 3600);
         var cut = text.IndexOf("===COMPANION===", StringComparison.Ordinal);
@@ -243,6 +590,12 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
         prepText = draft >= 0 ? PyStr.Strip(prepText[draft..]) : "";
         if (prepText.Length == 0)
             throw new InvalidOperationException("the reply wasn't a prep: " + PyStr.Head(text, 200));
+        if (note.Length > 0)
+        {
+            prepText = WithNote(prepText, note);
+            Degraded++;
+            log($"  written without some sources: {RemovePrefix(note, "> **Not everything could be read:** ")}");
+        }
         var written = new List<string>();
         var path = OutputPath(plan.File!);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -270,7 +623,18 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
     public int Run(bool dryRun = false)
     {
         var now = Clock.Now();
-        var due = Upcoming(now).Where(p => PyTime.FromIso(p.Due!) <= now && !Exists(OutputPath(p.File!))).ToList();
+        List<PlanRow> upcoming;
+        try
+        {
+            upcoming = Upcoming(now);
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            if (!dryRun)
+                SettleOutage(ran: false);
+            throw;
+        }
+        var due = upcoming.Where(p => PyTime.FromIso(p.Due!) <= now && !Exists(OutputPath(p.File!))).ToList();
         log($"run{(dryRun ? " (dry run)" : "")}: {due.Count} due");
         var failures = 0;
         foreach (var plan in due)
@@ -293,6 +657,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
             catch (LimitReachedException limit)
             {
                 Limited(["run"], limit);
+                SettleOutage();
                 return 0;
             }
             catch (LockTimeoutException)
@@ -303,6 +668,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
             }
             catch (Exception error) when (error is not OutOfMemoryException)
             {
+                // Graph failures don't get here (they make a degraded prep), so this is the prep's own: Claude, or the file.
                 failures++;
                 log($"  FAILED {plan.File}: {PyMore.ErrorText(error)}");
                 host.Notify("Prep failed", [plan.Subject, $"Log: {Config.LogFile}"]);
@@ -311,6 +677,8 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
             AfterWrite(Report("prep", plan.Subject, plan.Start, written.Select(Config.Relative)));
         }
         failures += Refresh(dryRun);
+        if (!dryRun)
+            SettleOutage();
         return failures > 0 ? 1 : 0;
     }
 
@@ -404,26 +772,9 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
         return failures > 0 ? 1 : 0;
     }
 
-    private JsonObject Refreshed()
-    {
-        try
-        {
-            return PyJson.Parse(PyStr.ReadText(Config.StateFile)) is JsonObject state && state["refreshed"] is JsonObject done
-                ? (JsonObject)done.DeepClone()
-                : [];
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Text.Json.JsonException
-                                          or System.Text.DecoderFallbackException)
-        {
-            return [];
-        }
-    }
+    private JsonObject Refreshed() => State()["refreshed"] is JsonObject done ? (JsonObject)done.DeepClone() : [];
 
-    private void SaveRefreshed(JsonObject done)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(Config.StateFile)!);
-        PyStr.WriteText(Config.StateFile, PyJson.Dump(new JsonObject { ["refreshed"] = done.DeepClone() }, 2));
-    }
+    private void SaveRefreshed(JsonObject done) => SaveState("refreshed", done);
 
     /// <summary>When the prep was written: the earlier of its creation and modification times (on Windows st_ctime is
     /// creation, so a transcript update since doesn't move "since").</summary>
@@ -457,8 +808,15 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
                 log($"refresh: would check {prepName} for messages since {F(written, "%a %H:%M")}");
                 continue;
             }
-            var mail = Context.Mail(graph, Config, plan.With, Clock, sinceTime: writtenAt, log: log);
-            var teams = Context.Teams(graph, plan.With, Clock, sinceTime: writtenAt, log: log);
+            var gaps = new OrderedDictionary<string, string>(StringComparer.Ordinal);
+            var mail = Read("email", () => Context.Mail(graph, Config, plan.With, Clock, sinceTime: writtenAt, log: log), gaps);
+            var teams = Read("Teams", () => Context.Teams(graph, plan.With, Clock, sinceTime: writtenAt), gaps);
+            if (gaps.Count > 0)
+            {
+                // not marked done: the next run tries again, while the meeting is still within the hour
+                log($"refresh: {prepName} waits, {PyMore.AndList(gaps.Keys.ToList())} unavailable");
+                continue;
+            }
             done[key] = PyTime.Iso(now, "minutes");
             if (mail.StartsWith("(none", StringComparison.Ordinal) && teams.StartsWith("(none", StringComparison.Ordinal))
             {
@@ -525,6 +883,6 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
     {
         var match = Plans(day, 1).FirstOrDefault(p => p.With == who || p.Series == who)
                     ?? throw new NoSuchMeetingException($"No meeting on {PyTime.Iso(day)} with {Py.ReprString(who)} that gets a prep.");
-        return PrepPrompt(match, Clock.Now());
+        return PrepPrompt(match, Clock.Now()).Prompt;
     }
 }

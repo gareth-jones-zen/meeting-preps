@@ -12,8 +12,9 @@ namespace MeetingPreps;
 /// would delete (noise_rules), and external mail with nobody else from org_domain on it. **For a 1:1, each email
 /// comes in full** (quoted history cut, a forward kept whole, each capped, all capped); for a group, a line each.
 /// **Teams:** your 1:1 chat with the person and small group chats you share (or the series' chat by name). **The
-/// diary** says who each small meeting is with. A failure in any of it never stops a prep; it says what was
-/// unavailable instead. Everything is formatted exactly as the Python's context.py did.</summary>
+/// diary** says who each small meeting is with. Mail and Teams throw when Graph fails; the engine catches it
+/// (Engine.Read), so a failure never stops a prep: the prep says at the top what couldn't be read, and why.
+/// Everything is formatted exactly as the Python's context.py did.</summary>
 public static class Context
 {
     private static readonly PyRegex NoiseSubject =
@@ -33,10 +34,11 @@ public static class Context
 
     private static string Strftime(DateTime t, string format) => PyTime.Strftime(t, format);
 
-    public static string Diary(IGraph graph, Config config, DateOnly start, int days = 7)
+    /// <summary>The calendar events given (the engine's calendar read, or its cached copy), one line each.</summary>
+    public static string Diary(Config config, IEnumerable<JsonObject> items)
     {
         var lines = new List<string>();
-        foreach (var e in Planner.Events(graph, config, start, days))
+        foreach (var e in items)
         {
             if (Py.Truthy(e["isCancelled"]) || Py.Truthy(e["isAllDay"]))
                 continue;
@@ -139,147 +141,130 @@ public static class Context
         DateTimeOffset? sinceTime = null, Action<string>? log = null)
     {
         log ??= _ => { };
-        try
+        var rules = TriageRules(config, log);
+        var warned = new HashSet<string>();
+        var start = sinceTime is { } s ? s.ToUniversalTime() : clock.NowUtc().AddDays(-days);
+        var since = start.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture);
+        var folders = new Dictionary<string, string>();
+        string Folder(string id)
         {
-            var rules = TriageRules(config, log);
-            var warned = new HashSet<string>();
-            var start = sinceTime is { } s ? s.ToUniversalTime() : clock.NowUtc().AddDays(-days);
-            var since = start.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture);
-            var folders = new Dictionary<string, string>();
-            string Folder(string id)
+            if (!folders.TryGetValue(id, out var display))
             {
-                if (!folders.TryGetValue(id, out var display))
+                try
                 {
-                    try
-                    {
-                        display = TextOr(graph.Get($"/me/mailFolders/{id}?$select=displayName")["displayName"], "");
-                    }
-                    catch (Exception)
-                    {
-                        display = "";
-                    }
-                    folders[id] = display;
+                    display = TextOr(graph.Get($"/me/mailFolders/{id}?$select=displayName")["displayName"], "");
                 }
-                return display;
+                catch (Exception)
+                {
+                    display = "";
+                }
+                folders[id] = display;
             }
+            return display;
+        }
 
-            var select = "$select=subject,from,toRecipients,ccRecipients,bodyPreview,receivedDateTime,sentDateTime,parentFolderId"
-                         + (name is not null ? ",body" : "");
-            var headers = name is not null ? new Dictionary<string, string> { ["Prefer"] = "outlook.body-content-type=\"text\"" } : null;
-            var got = new List<(DateTimeOffset When, string Line)>();
-            var budget = BodiesCap;
-            (string Url, bool Sent)[] sources =
-            [
-                ($"/me/messages?$filter=receivedDateTime%20ge%20{since}&$orderby=receivedDateTime%20desc&$top=100&{select}", false),
-                ($"/me/mailFolders/sentitems/messages?$filter=sentDateTime%20ge%20{since}&$orderby=sentDateTime%20desc&$top=100&{select}", true),
-            ];
-            foreach (var (url, sent) in sources)
-            {
-                var count = 0;
-                foreach (var node in graph.Pages(url, headers))
-                {
-                    if (count++ >= 500)
-                        break;
-                    var m = (JsonObject)node!;
-                    var to = People(m["toRecipients"]);
-                    var cc = People(m["ccRecipients"]);
-                    var sender = Py.Truthy(m["from"]) ? People(new JsonArray(m["from"]!.DeepClone()))[0] : ("", "");
-                    var subject = TextOr(m["subject"], "");
-                    var preview = string.Join(" ", PyStr.Split(TextOr(m["bodyPreview"], "")));
-                    if (NoiseSubject.MatchStart(subject) is not null || preview.StartsWith("____", StringComparison.Ordinal)
-                        || subject.Length == 0 || preview.StartsWith("-----", StringComparison.Ordinal))
-                        continue;
-                    var everyone = to.Concat(cc).ToList();
-                    if (!sent)
-                    {
-                        if (NoiseSender.IsMatch(sender.Item2) || config.NoiseSenders.Any(n => PyRegex.Get(n, true).IsMatch(sender.Item2))
-                            || TriageDeletes(rules, sender.Item2, subject + " " + preview, warned, log))
-                            continue;
-                        if (sender.Item2 == config.Email || !everyone.Any(p => p.Address == config.Email))
-                            continue;
-                        if (config.OrgDomain is { } org && !sender.Item2.EndsWith("@" + org, StringComparison.Ordinal)
-                            && !everyone.Any(p => p.Address.EndsWith("@" + org, StringComparison.Ordinal) && p.Address != config.Email))
-                            continue;   // external mail only on a business thread, with a colleague on it
-                        var folder = Folder(TextOr(m["parentFolderId"], "")).ToLowerInvariant();
-                        if (config.MailSkipFolders.Any(f => folder.StartsWith(f, StringComparison.Ordinal)))
-                            continue;
-                    }
-                    var names = everyone.Select(p => p.Name).Append(sender.Item1).ToHashSet();
-                    if (name is not null && !names.Any(n => n.ToLowerInvariant().Contains(name.ToLowerInvariant(), StringComparison.Ordinal)))
-                        continue;
-                    var when = PyMore.AwareFromIso(Py.Str(m[sent ? "sentDateTime" : "receivedDateTime"]));
-                    var who = sent
-                        ? $"{config.Owner} to " + PyStr.Head(string.Join(", ", to.Select(p => p.Name)), 80)
-                        : (sender.Item1.Length > 0 ? sender.Item1 : sender.Item2);
-                    preview = PyStr.Head(Caution.Sub("", preview), 240);
-                    var line = $"- {Strftime(clock.ToLocal(when), "%a %d %b %H:%M")} {who}: {subject} | {preview}";
-                    if (name is not null && budget > 0)
-                    {
-                        var body = FullText(TextOr(m["body"]?["content"], ""), preview);
-                        if (body.Length > 0)
-                        {
-                            budget -= PyMore.Len(body);
-                            line += "\n  Full text:\n" + string.Join("\n", PyStr.SplitLines(body).Select(l => "    " + l));
-                        }
-                    }
-                    got.Add((when, line));
-                }
-            }
-            var sorted = got.OrderBy(g => g.When).ThenBy(g => g.Line, PyStr.Order).ToList();
-            var kept = PyMore.Last(sorted, cap);
-            return kept.Count > 0 ? string.Join("\n", kept.Select(g => g.Line)) : "(none)";
-        }
-        catch (Exception error) when (error is not OutOfMemoryException)
+        var select = "$select=subject,from,toRecipients,ccRecipients,bodyPreview,receivedDateTime,sentDateTime,parentFolderId"
+                     + (name is not null ? ",body" : "");
+        var headers = name is not null ? new Dictionary<string, string> { ["Prefer"] = "outlook.body-content-type=\"text\"" } : null;
+        var got = new List<(DateTimeOffset When, string Line)>();
+        var budget = BodiesCap;
+        (string Url, bool Sent)[] sources =
+        [
+            ($"/me/messages?$filter=receivedDateTime%20ge%20{since}&$orderby=receivedDateTime%20desc&$top=100&{select}", false),
+            ($"/me/mailFolders/sentitems/messages?$filter=sentDateTime%20ge%20{since}&$orderby=sentDateTime%20desc&$top=100&{select}", true),
+        ];
+        foreach (var (url, sent) in sources)
         {
-            var text = PyMore.ErrorText(error);
-            log($"  email unavailable: {PyStr.Head(text, 200)}");
-            return $"(unavailable: {PyStr.Head(text, 120)})";
+            var count = 0;
+            foreach (var node in graph.Pages(url, headers))
+            {
+                if (count++ >= 500)
+                    break;
+                var m = (JsonObject)node!;
+                var to = People(m["toRecipients"]);
+                var cc = People(m["ccRecipients"]);
+                var sender = Py.Truthy(m["from"]) ? People(new JsonArray(m["from"]!.DeepClone()))[0] : ("", "");
+                var subject = TextOr(m["subject"], "");
+                var preview = string.Join(" ", PyStr.Split(TextOr(m["bodyPreview"], "")));
+                if (NoiseSubject.MatchStart(subject) is not null || preview.StartsWith("____", StringComparison.Ordinal)
+                    || subject.Length == 0 || preview.StartsWith("-----", StringComparison.Ordinal))
+                    continue;
+                var everyone = to.Concat(cc).ToList();
+                if (!sent)
+                {
+                    if (NoiseSender.IsMatch(sender.Item2) || config.NoiseSenders.Any(n => PyRegex.Get(n, true).IsMatch(sender.Item2))
+                        || TriageDeletes(rules, sender.Item2, subject + " " + preview, warned, log))
+                        continue;
+                    if (sender.Item2 == config.Email || !everyone.Any(p => p.Address == config.Email))
+                        continue;
+                    if (config.OrgDomain is { } org && !sender.Item2.EndsWith("@" + org, StringComparison.Ordinal)
+                        && !everyone.Any(p => p.Address.EndsWith("@" + org, StringComparison.Ordinal) && p.Address != config.Email))
+                        continue;   // external mail only on a business thread, with a colleague on it
+                    var folder = Folder(TextOr(m["parentFolderId"], "")).ToLowerInvariant();
+                    if (config.MailSkipFolders.Any(f => folder.StartsWith(f, StringComparison.Ordinal)))
+                        continue;
+                }
+                var names = everyone.Select(p => p.Name).Append(sender.Item1).ToHashSet();
+                if (name is not null && !names.Any(n => n.ToLowerInvariant().Contains(name.ToLowerInvariant(), StringComparison.Ordinal)))
+                    continue;
+                var when = PyMore.AwareFromIso(Py.Str(m[sent ? "sentDateTime" : "receivedDateTime"]));
+                var who = sent
+                    ? $"{config.Owner} to " + PyStr.Head(string.Join(", ", to.Select(p => p.Name)), 80)
+                    : (sender.Item1.Length > 0 ? sender.Item1 : sender.Item2);
+                preview = PyStr.Head(Caution.Sub("", preview), 240);
+                var line = $"- {Strftime(clock.ToLocal(when), "%a %d %b %H:%M")} {who}: {subject} | {preview}";
+                if (name is not null && budget > 0)
+                {
+                    var body = FullText(TextOr(m["body"]?["content"], ""), preview);
+                    if (body.Length > 0)
+                    {
+                        budget -= PyMore.Len(body);
+                        line += "\n  Full text:\n" + string.Join("\n", PyStr.SplitLines(body).Select(l => "    " + l));
+                    }
+                }
+                got.Add((when, line));
+            }
         }
+        var sorted = got.OrderBy(g => g.When).ThenBy(g => g.Line, PyStr.Order).ToList();
+        var kept = PyMore.Last(sorted, cap);
+        return kept.Count > 0 ? string.Join("\n", kept.Select(g => g.Line)) : "(none)";
     }
 
     public static string Teams(IGraph graph, string? name, Clock clock, int days = 14, int perChat = 50, int cap = 200,
-        string? topic = null, DateTimeOffset? sinceTime = null, Action<string>? log = null)
+        string? topic = null, DateTimeOffset? sinceTime = null)
     {
-        log ??= _ => { };
-        try
+        if (string.IsNullOrEmpty(name) && string.IsNullOrEmpty(topic))
+            return "(none)";   // a series with no chat named: nothing to look for, so no call to make
+        var since = sinceTime is { } s ? s.ToUniversalTime() : clock.NowUtc().AddDays(-days);
+        var chats = graph.Get("/me/chats?$expand=members&$top=50");
+        var lines = new List<(DateTimeOffset Sent, string Line)>();
+        foreach (var chat in chats["value"] as JsonArray ?? [])
         {
-            var since = sinceTime is { } s ? s.ToUniversalTime() : clock.NowUtc().AddDays(-days);
-            var chats = graph.Get("/me/chats?$expand=members&$top=50");
-            var lines = new List<(DateTimeOffset Sent, string Line)>();
-            foreach (var chat in chats["value"] as JsonArray ?? [])
+            var members = (chat?["members"] as JsonArray ?? []).Select(m => TextOr(m?["displayName"], "")).ToList();
+            var type = Text(chat?["chatType"]);
+            if (type is not ("oneOnOne" or "group") || members.Count > 12)
+                continue;
+            var chatTopic = chat?["topic"] is JsonValue t ? Py.Str(t) : null;
+            if (!((topic is { Length: > 0 } && chatTopic == topic) || (name is { Length: > 0 } && members.Contains(name))))
+                continue;
+            var label = Py.Truthy(chat?["topic"]) ? chatTopic! : type == "oneOnOne" ? "1:1 chat" : string.Join(", ", members);
+            var found = graph.Get($"/chats/{Py.Str(chat!["id"])}/messages?$top={perChat}");
+            foreach (var message in found["value"] as JsonArray ?? [])
             {
-                var members = (chat?["members"] as JsonArray ?? []).Select(m => TextOr(m?["displayName"], "")).ToList();
-                var type = Text(chat?["chatType"]);
-                if (type is not ("oneOnOne" or "group") || members.Count > 12)
+                var sent = PyMore.AwareFromIso(Py.Str(message!["createdDateTime"]));
+                if (Text(message["messageType"]) != "message" || sent < since)
                     continue;
-                var chatTopic = chat?["topic"] is JsonValue t ? Py.Str(t) : null;
-                if (!((topic is { Length: > 0 } && chatTopic == topic) || (name is { Length: > 0 } && members.Contains(name))))
-                    continue;
-                var label = Py.Truthy(chat?["topic"]) ? chatTopic! : type == "oneOnOne" ? "1:1 chat" : string.Join(", ", members);
-                var found = graph.Get($"/chats/{Py.Str(chat!["id"])}/messages?$top={perChat}");
-                foreach (var message in found["value"] as JsonArray ?? [])
-                {
-                    var sent = PyMore.AwareFromIso(Py.Str(message!["createdDateTime"]));
-                    if (Text(message["messageType"]) != "message" || sent < since)
-                        continue;
-                    var text = Tag.Sub(" ", TextOr(message["body"]?["content"], ""));
-                    text = PyStr.Strip(Space.Sub(" ", text.Replace("&nbsp;", " ").Replace("&amp;", "&")));
-                    var from = Py.Truthy(message["from"]) ? message["from"] : null;
-                    var user = Py.Truthy(from?["user"]) ? from!["user"] : null;
-                    var sender = TextOr(user?["displayName"], "?");
-                    if (text.Length > 0)
-                        lines.Add((sent, $"- {Strftime(clock.ToLocal(sent), "%a %d %b %H:%M")} [{PyStr.Head(label, 40)}] {sender}: {PyStr.Head(text, 500)}"));
-                }
+                var text = Tag.Sub(" ", TextOr(message["body"]?["content"], ""));
+                text = PyStr.Strip(Space.Sub(" ", text.Replace("&nbsp;", " ").Replace("&amp;", "&")));
+                var from = Py.Truthy(message["from"]) ? message["from"] : null;
+                var user = Py.Truthy(from?["user"]) ? from!["user"] : null;
+                var sender = TextOr(user?["displayName"], "?");
+                if (text.Length > 0)
+                    lines.Add((sent, $"- {Strftime(clock.ToLocal(sent), "%a %d %b %H:%M")} [{PyStr.Head(label, 40)}] {sender}: {PyStr.Head(text, 500)}"));
             }
-            var sorted = lines.OrderBy(l => l.Sent).ThenBy(l => l.Line, PyStr.Order).ToList();
-            var kept = PyMore.Last(sorted, cap);
-            return kept.Count > 0 ? string.Join("\n", kept.Select(l => l.Line)) : "(none)";
         }
-        catch (Exception error) when (error is not OutOfMemoryException)
-        {
-            var text = PyMore.ErrorText(error);
-            log($"  Teams messages unavailable: {PyStr.Head(text, 200)}");
-            return $"(unavailable: {PyStr.Head(text, 120)})";
-        }
+        var sorted = lines.OrderBy(l => l.Sent).ThenBy(l => l.Line, PyStr.Order).ToList();
+        var kept = PyMore.Last(sorted, cap);
+        return kept.Count > 0 ? string.Join("\n", kept.Select(l => l.Line)) : "(none)";
     }
 }

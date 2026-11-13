@@ -14,11 +14,39 @@ public static class ScenarioRunner
 
     private sealed class FixtureMissing(string message) : Exception(message);
 
+    /// <summary>The error a Graph call meets in an outage, as the oracle's outage_error raises it in Python.</summary>
+    private static Exception OutageError(JsonObject spec, string url)
+    {
+        if (spec["http"] is { } code)
+            return new M365Graph.GraphRequestException((System.Net.HttpStatusCode)(int)code, "GET", url, "");
+        if ((bool?)spec["dns"] ?? false)
+            return new HttpRequestException("No such host is known. (graph.microsoft.com:443)",
+                new System.Net.Sockets.SocketException(11001));
+        if (spec["timeout"] is { } timeout)
+            return new TimeoutException((string)timeout!);
+        if (spec["signin"] is { } signin)
+            return new M365Graph.SignInNeededException((string)signin!);
+        return new IOException((string)spec["error"]!);
+    }
+
     private sealed class FakeGraph(JsonObject fx, JsonArray record) : IGraph
     {
+        public JsonObject Down { get; set; } = fx["down"] as JsonObject ?? [];
+        public Dictionary<string, int> Calls { get; } = [];
+
+        private void Outage(string url)
+        {
+            var label = url.Contains("calendarView", StringComparison.Ordinal) ? "calendar"
+                : url.Contains("chats", StringComparison.Ordinal) ? "Teams" : "email";
+            Calls[label] = Calls.GetValueOrDefault(label) + 1;
+            if (Down[label] is JsonObject spec && Calls[label] > ((int?)spec["after"] ?? 0))
+                throw OutageError(spec, url);
+        }
+
         public JsonObject Get(string url)
         {
             record.Add((JsonNode)new JsonArray("GET", url, new JsonObject()));
+            Outage(url);
             if (fx["get"] is JsonObject gets && gets[url] is JsonObject found)
                 return (JsonObject)found.DeepClone();
             const string folderPrefix = "/me/mailFolders/", folderSuffix = "?$select=displayName";
@@ -46,6 +74,7 @@ public static class ScenarioRunner
             foreach (var (k, v) in headers ?? new Dictionary<string, string>())
                 h[k] = v;
             record.Add((JsonNode)new JsonArray("PAGES", url, h));
+            Outage(url);
             if (url.StartsWith("/me/calendarView?", StringComparison.Ordinal) && fx["calendar"] is JsonArray calendar)
             {
                 var query = HttpUtility.ParseQueryString(url.Split('?', 2)[1]);
@@ -174,6 +203,7 @@ public static class ScenarioRunner
                 File.SetLastWriteTimeUtc(Path.Combine(tmp, name), PyTime.At(London, PyTime.FromIso((string)when!)).UtcDateTime);
             File.WriteAllBytes(Path.Combine(tmp, "config.toml"), new System.Text.UTF8Encoding(false).GetBytes((string)scenario["settings"]!));
             var graph = new FakeGraph(scenario["graph"] as JsonObject ?? [], (JsonArray)record["graph"]!);
+            var standing = graph.Down;
             Config? config = null;
             Config LoadConfig() => Config.Load(Path.Combine(tmp, "config.toml"));
             foreach (var opNode in scenario["ops"] as JsonArray ?? [])
@@ -181,6 +211,8 @@ public static class ScenarioRunner
                 var op = (JsonObject)opNode!;
                 var kind = (string)op["op"]!;
                 var output = new JsonObject { ["op"] = kind };
+                graph.Down = op.ContainsKey("down") ? op["down"] as JsonObject ?? [] : standing;
+                graph.Calls.Clear();
                 try
                 {
                     if (kind == "load")
@@ -196,11 +228,17 @@ public static class ScenarioRunner
                         var engine = new Engine(config, graph, Log, host);
                         switch (kind)
                         {
-                            case "plan":
+                            case "plan":   // as the CLI's plan
                                 var start = DateOnly.ParseExact((string)op["start"]!, "yyyy-MM-dd");
                                 var days = (int)op["days"]!;
-                                var plan = Planner.PlanAll(config, Planner.Events(graph, config, start, days), start, days);
-                                output["result"] = new JsonObject { ["json"] = Planner.Json(plan), ["show"] = Planner.Show(plan, start, days) };
+                                var plan = engine.PlanRows(start, days);
+                                output["result"] = new JsonObject
+                                {
+                                    ["json"] = Planner.Json(plan), ["show"] = Planner.Show(plan, start, days),
+                                    ["from"] = engine.CalendarFrom is { } from
+                                        ? $"(The calendar couldn't be read: planned from the copy read {PyTime.Strftime(from, "%a %d %b %H:%M")}.)"
+                                        : null,
+                                };
                                 break;
                             case "run":
                                 output["result"] = engine.Run((bool?)op["dry_run"] ?? false);
@@ -215,14 +253,16 @@ public static class ScenarioRunner
                             case "refresh":
                                 output["result"] = engine.Refresh((bool?)op["dry_run"] ?? false);
                                 break;
-                            case "context":
+                            case "context":   // as the CLI's context, with a topic too
                                 var name = (string?)op["name"];
-                                output["result"] = new JsonObject
+                                var gaps = new OrderedDictionary<string, string>(StringComparer.Ordinal);
+                                var result = new JsonObject
                                 {
-                                    ["mail"] = Context.Mail(graph, config, name, clock, log: Log),
-                                    ["teams"] = Context.Teams(graph, name, clock, topic: (string?)op["topic"], log: Log),
-                                    ["diary"] = Context.Diary(graph, config, DateOnly.FromDateTime(now)),
+                                    ["mail"] = engine.Read("email", () => Context.Mail(graph, config, name, clock, log: Log), gaps),
+                                    ["teams"] = engine.Read("Teams", () => Context.Teams(graph, name, clock, topic: (string?)op["topic"]), gaps),
                                 };
+                                output["result"] = result;
+                                result["diary"] = Context.Diary(config, engine.Calendar(DateOnly.FromDateTime(now), 7).Items);
                                 break;
                             default:
                                 throw new InvalidOperationException($"unknown op {kind}");
@@ -278,7 +318,8 @@ public static class ScenarioRunner
             ["noise_rules"] = c.NoiseRules, ["org_domain"] = c.OrgDomain, ["login_hint"] = c.LoginHint, ["tenant"] = c.Tenant,
             ["msal_cache"] = c.MsalCache, ["timezone"] = c.TimeZone, ["scopes"] = Strings(c.Scopes),
             ["watch"] = new JsonArray(c.WatchEveryMinutes, Strings([c.WatchHours.Start, c.WatchHours.End]), c.WatchWeekdays),
-            ["log_file"] = c.LogFile, ["state_file"] = c.StateFile, ["aliases"] = aliases, ["kinds"] = kinds,
+            ["log_file"] = c.LogFile, ["state_file"] = c.StateFile, ["aliases"] = aliases,
+            ["calendar_cache"] = c.CalendarCache, ["calendar_cache_days"] = PyMore.FormatG(c.CalendarCacheDays), ["kinds"] = kinds,
             ["people"] = Strings(c.PeopleInOrder.Select(p => p.Key)), ["series"] = Strings(c.SeriesInOrder.Select(p => p.Key)),
         };
     }

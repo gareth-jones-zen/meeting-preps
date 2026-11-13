@@ -41,8 +41,8 @@ public sealed class Entry
 }
 
 /// <summary>The settings file: who you are, which meetings get a prep, how each kind is written, and where it goes.
-/// The same file the Python version read (see its config.py docstring for every option), read the same way, so
-/// paths come out as the same text and the state, log and lock names are shared.</summary>
+/// Every option is in the README. Read as the Python version read it, so paths come out as the same text and the
+/// state, log, calendar copy and lock names are shared.</summary>
 public sealed class Config
 {
     public const string EnvConfig = "MEETING_PREPS_CONFIG";
@@ -101,6 +101,13 @@ public sealed class Config
     public bool WatchWeekdays { get; init; } = true;
     public required string LogFile { get; init; }
     public required string StateFile { get; init; }
+
+    /// <summary>The copy of the last good calendar read, planned from when Graph is down (default: beside the state
+    /// file, as &lt;state&gt;.calendar.json).</summary>
+    public required string CalendarCache { get; init; }
+
+    /// <summary>How old that copy may be, in days, and still be planned from.</summary>
+    public double CalendarCacheDays { get; init; } = 3;
 
     public Entry? Person(string name) => PeopleInOrder.FirstOrDefault(p => p.Key == name).Value;
     public Entry? Series(string subject) => SeriesInOrder.FirstOrDefault(p => p.Key == subject).Value;
@@ -250,6 +257,7 @@ public sealed class Config
             : [];
         string? Optional(string key) => raw.TryGetValue(key, out var value) && Truthy(raw, key) ? Str(value) : null;
         var local = LocalFolder(env);
+        var stateFile = Optional("state_file") is { } state ? PathSetting(state, folder, env) : PyPath.Pure(System.IO.Path.Combine(local, "state.json"));
         var houseRules = Truthy(raw, "house_rules_file")
             ? TextSetting(raw, "house_rules", folder, full, env)
             : HouseRulesFile(raw, folder, full, env);
@@ -290,8 +298,19 @@ public sealed class Config
             WatchHours = (hours.Split('-')[0], hours.Split('-')[1]),
             WatchWeekdays = !watch.ContainsKey("weekdays") || Truthy(watch, "weekdays"),
             LogFile = Optional("log_file") is { } log ? PathSetting(log, folder, env) : PyPath.Pure(System.IO.Path.Combine(local, "meeting-preps.log")),
-            StateFile = Optional("state_file") is { } state ? PathSetting(state, folder, env) : PyPath.Pure(System.IO.Path.Combine(local, "state.json")),
+            StateFile = stateFile,
+            CalendarCache = Optional("calendar_cache") is { } calendarCache ? PathSetting(calendarCache, folder, env) : WithSuffix(stateFile, ".calendar.json"),
+            CalendarCacheDays = raw.TryGetValue("calendar_cache_days", out var ccd) ? Float(ccd) : 3,
         };
+    }
+
+    /// <summary>pathlib's with_suffix: the name's last ".x" (if it has one) replaced.</summary>
+    internal static string WithSuffix(string path, string suffix)
+    {
+        var name = System.IO.Path.GetFileName(path);
+        var dot = name.LastIndexOf('.');
+        var stem = dot > 0 && dot < name.Length - 1 ? name[..dot] : name;
+        return PyPath.Pure(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(path) ?? "", stem + suffix));
     }
 
     private static List<KeyValuePair<string, Entry>> Entries(TomlTable raw, string key, string label, Dictionary<string, Kind> kinds, string full)
@@ -397,6 +416,17 @@ public sealed class Config
         double d => Py.Repr(d),
         TomlDateTime t => t.ToString(),
         _ => value.ToString() ?? "",
+    };
+
+    /// <summary>Python's float() of a setting: a number, a bool, or text such as "2.5" (a ValueError otherwise).</summary>
+    private static double Float(object? value) => value switch
+    {
+        long l => l,
+        double d => d,
+        bool b => b ? 1 : 0,
+        string s => PyMore.ParseFloat(s),
+        _ => throw new InvalidOperationException(
+            $"float() argument must be a string or a real number, not '{(value is TomlArray ? "list" : value is TomlTable ? "dict" : value?.GetType().Name)}'"),
     };
 
     /// <summary>Python's int() of a setting.</summary>
