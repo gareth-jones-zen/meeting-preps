@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Not shipped: runs the oracle's scenarios through the port, as a Native AOT exe, so the published build is
+       checked as well as the test build. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <PublishAot>true</PublishAot>
+    <IsAotCompatible>false</IsAotCompatible>
+    <NoWarn>$(NoWarn);IL2026;IL3050</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\MeetingPreps\MeetingPreps.csproj" />
+  </ItemGroup>
+</Project>

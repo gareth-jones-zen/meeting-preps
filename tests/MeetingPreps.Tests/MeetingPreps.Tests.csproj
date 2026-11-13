@@ -2,6 +2,8 @@
   <PropertyGroup>
     <IsTestProject>true</IsTestProject>
     <OutputType>Exe</OutputType>
+    <!-- Test code builds JSON records freely; nothing here is published with AOT. -->
+    <NoWarn>$(NoWarn);IL2026;IL3050</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="xunit.v3" Version="4.0.3" />
@@ -11,6 +13,9 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\MeetingPreps\MeetingPreps.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\..\tools\Parity\ScenarioRunner.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Golden\**\*" CopyToOutputDirectory="PreserveNewest" />
