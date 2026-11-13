@@ -18,6 +18,26 @@ meeting-preps plan
 meeting-preps autostart on      # from now on, preps are written when they're due
 ```
 
+## The .NET port (this branch)
+
+This branch is a port to .NET 11 with Native AOT: `meeting-preps.exe` (console) and `meeting-preps-background.exe`
+(no window, what the logon task runs). Same commands, settings file, state file, log, task name and lock names as the
+Python version, so either can replace the other with nothing to migrate. The plan is in [PLAN.md](PLAN.md).
+
+- **Build:** clone [background-tools-lib](https://github.com/gareth-jones-zen/background-tools-lib) beside this
+  repository, then `dotnet test -c Release` and `dotnet publish src/MeetingPreps.Console -c Release -r win-x64`.
+  Another checkout of the library can be named with `-p:BackgroundToolsLib=<folder>\`.
+- **Parity with the Python:** `tests/parity/oracle.py` runs scenarios through the Python (kept in `src/meeting_preps`)
+  with Graph, Claude and every program faked, and records each prompt, Graph request, program started, log line and
+  file written. The tests run the same scenarios through the port and compare the records whole
+  (`tests/MeetingPreps.Tests/Golden`, synthetic only). `tools/Parity` does the same as a Native AOT exe.
+- **New:** `meeting-preps prompt DATE "<name>"` prints the prompt a prep would be written from, without running
+  Claude or writing anything, for comparing the two versions on a real calendar.
+- **Differences, deliberately:** an attendee with no name counts as an empty name (the Python stopped the plan); a
+  user regex the two would read differently is refused (leave_pattern) or skipped with a log line (a mail-triage
+  rule); `--add-dir` comes in a fixed order; a job queued at the usage limit runs the exe; `--version` is the .NET
+  version; argparse's wording is approximated, with the same exit codes.
+
 ## Install
 
 ```
