@@ -20,6 +20,10 @@ public sealed class Kind
     public bool EveryTranscript { get; init; }
     public string UpdateRules { get; init; } = "";
     public List<List<string>> ContextCommands { get; init; } = [];
+
+    /// <summary>A document written in a block of your own (a weekly update), not a meeting prep: its prompt is its
+    /// rules plus the week's diary, email and (if the series names a chat) Teams, without the prep's scaffolding.</summary>
+    public bool Document { get; init; }
 }
 
 /// <summary>A series' usual weekly slot.</summary>
@@ -38,6 +42,14 @@ public sealed class Entry
     public string? Chat { get; init; }
     public List<Slot> Weekly { get; init; } = [];
     public string? Absorbs { get; init; }
+
+    /// <summary>A series that is one of your own blocks (yours, no one else invited): only such an event matches, it's
+    /// never put back from a weekly slot (no block, as on leave, means nothing is written), and it stays worth writing
+    /// for the rest of its day after the block has started.</summary>
+    public bool OwnBlock { get; init; }
+
+    /// <summary>Where this series' files go, overriding output (absolute; given relative to the workspace).</summary>
+    public string? Folder { get; init; }
 }
 
 /// <summary>The settings file: who you are, which meetings get a prep, how each kind is written, and where it goes.
@@ -238,12 +250,13 @@ public sealed class Config
                     ContextCommands = section.TryGetValue("context_commands", out var cc) && cc is TomlArray commands
                         ? commands.Select(command => command is TomlArray parts ? parts.Select(Str).ToList() : [Str(command)]).ToList()
                         : [],
+                    Document = Truthy(section, "document"),
                 };
             }
         }
 
-        var people = Entries(raw, "person", "person", kinds, full);
-        var series = Entries(raw, "series", "series", kinds, full);
+        var people = Entries(raw, "person", "person", kinds, full, workspace, env);
+        var series = Entries(raw, "series", "series", kinds, full, workspace, env);
         var watch = raw.TryGetValue("watch", out var w) && w is TomlTable watchTable ? watchTable : [];
         var hours = watch.TryGetValue("hours", out var h) ? Str(h) : "07:00-18:00";
         if (!Regex.IsMatch(hours, @"\A\d\d:\d\d-\d\d:\d\d\z", RegexOptions.CultureInvariant))
@@ -313,7 +326,8 @@ public sealed class Config
         return PyPath.Pure(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(path) ?? "", stem + suffix));
     }
 
-    private static List<KeyValuePair<string, Entry>> Entries(TomlTable raw, string key, string label, Dictionary<string, Kind> kinds, string full)
+    private static List<KeyValuePair<string, Entry>> Entries(TomlTable raw, string key, string label, Dictionary<string, Kind> kinds, string full,
+        string workspace, Func<string, string?> env)
     {
         var list = new List<KeyValuePair<string, Entry>>();
         if (!raw.TryGetValue(key, out var value) || value is not TomlTable table)
@@ -329,12 +343,16 @@ public sealed class Config
                 throw new SettingsException($"{where} has kind {repr}, which has no [kind.{kind ?? "None"}].");
             }
             var file = entry.TryGetValue("file", out var f) ? Str(f) : "";
-            if (!file.Contains("{date}", StringComparison.Ordinal) && !file.Contains("{week}", StringComparison.Ordinal))
+            if (!file.Contains("{date}", StringComparison.Ordinal) && !file.Contains("{week}", StringComparison.Ordinal)
+                && !file.Contains("{monday}", StringComparison.Ordinal))
                 throw new SettingsException($"{where} needs a file name with {{date}} in it.");
             foreach (var timing in new[] { "always_day_before_at", "due_previous_working_day_at", "due_same_day_at" })
                 if (entry.TryGetValue(timing, out var t) && !IsTime(Str(t)))
                     throw new SettingsException($"{where}: {timing} should be a time such as \"14:00\".");
             string? Timing(string name) => entry.TryGetValue(name, out var t) && Truthy(entry, name) ? Str(t) : null;
+            var ownBlock = Truthy(entry, "own_block");
+            if (ownBlock && Truthy(entry, "weekly"))
+                throw new SettingsException($"{where}: own_block and weekly don't go together (no block means nothing is written).");
             list.Add(new(name, new Entry
             {
                 Kind = kind,
@@ -351,6 +369,8 @@ public sealed class Config
                         ? inline.OfType<TomlTable>().Select(s => new Slot(Str(s["day"]), Str(s["start"]), Str(s["end"]))).ToList()
                         : [],
                 Absorbs = entry.TryGetValue("absorbs", out var ab) && Truthy(entry, "absorbs") ? Str(ab) : null,
+                OwnBlock = ownBlock,
+                Folder = Truthy(entry, "folder") ? PathSetting(Str(entry["folder"]), workspace, env) : null,
             }));
         }
         return list;

@@ -41,7 +41,7 @@ meeting-preps autostart on
 |---|---|
 | `plan [DATE] [DAYS] [--json]` | which meetings get a prep, and when (default: the next 5 days) |
 | `run [--dry-run]` | write whatever is due, then refresh preps for meetings in the next hour |
-| `write DATE "<name>"` | one prep now: the meeting that day with a person, or a series by subject |
+| `write DATE "<name>" [--out DIR]` | one prep now: the meeting that day with a person, or a series by subject. `--out` writes it into DIR instead, and doesn't run `after_write`: for trying a change without committing or queuing anything |
 | `update <transcript>...` | add "Update HH:MM" blocks to upcoming preps these transcripts touch |
 | `hook` | the same, for a transcript tool's report on stdin (see Hooks) |
 | `context "<name>"` | what a prep would see for this person: email, Teams, diary |
@@ -116,11 +116,25 @@ weekly = [{day = "Tue", start = "10:00", end = "11:00"}]   # optional: the usual
 # absorbs = "Leads pre-meet"            # optional: a same-day meeting folded into this prep
 # due_previous_working_day_at = "15:00" # optional timing overrides (or due_same_day_at)
 
+[kind.weekly-update]                    # a document you write in a block of your own, not a meeting prep
+describe = "weekly update, the team's section"
+rules_file = "kinds/weekly-update.md"   # its whole brief: what to read, the shape, what to leave out
+document = true                         # prompt is the rules plus the week's diary and email; no prep scaffolding
+every_transcript = true                 # transcripts that land after it's written suggest changes
+
+[series."Weekly update"]                # the subject of your own block for writing it
+kind = "weekly-update"
+own_block = true                        # only your own event with nobody else in it matches; no block, no draft
+folder = "updates"                      # optional: where this series' files go, instead of output
+file = "{week}.md"                      # filed under the coming Monday
+due_same_day_at = "14:00"               # or an hour before the block, if that's earlier
+# chat = "Team"                         # optional: the week's messages in this Teams chat are added too
+
 [aliases]
 "Sam J" = "Sam Jones"                   # other spellings calendar invites show
 ```
 
-Paths may use `~` and `%VARIABLES%`. File names take `{date}` (the meeting's), `{slug}`, and `{week}` (a weekly document's Monday: the meeting's day if it's a Monday, otherwise the coming one).
+Paths may use `~` and `%VARIABLES%`. File names take `{date}` (the meeting's), `{slug}`, `{week}` (a weekly document's Monday: the meeting's day if it's a Monday, otherwise the coming one) and `{monday}` (the Monday of the meeting's own week: that day if it's a Monday, otherwise the one before). A kind's rules can use `{name}` and `{slug}`, and also `{date}`, `{week}`, `{monday}` and `{file}` (where this one is written, relative to the workspace), such as `updates/whole-team/{monday}.md` for this week's page.
 
 **A kind's rules are where the judgement goes**: what to read, what to leave out, what shape the prep
 takes. Write them as you'd brief a colleague, with the reason; a rule with its reason is one Claude can
@@ -138,6 +152,8 @@ Each point came from a prep engine that ran daily for a month before this tool w
 - **Teams:** your 1:1 chat with them and small group chats you share. A prep once missed a live problem posted in a small group chat the afternoon before.
 - **Kept current.** When a transcript lands (`update`, or `hook`), upcoming preps get an "Update HH:MM" block if that person spoke. In the hour before a 1:1, email and Teams since the prep was written are checked once. A problem emailed an hour before a meeting otherwise only reaches it if someone happens to look.
 - **The tool's own rules are general lessons:** timings that add up to no more than 80% of the meeting; dates as dates, never "today", because a prep may be read the day after it's written; quote only transcripts actually read; cite a note's whole line, caveat included. Your house rules win where they differ.
+- **A document kind is for writing, not meeting.** A weekly update written in your own Friday block isn't a prep: there's no one to meet, no previous prep with them, no pre-read. Its prompt is its rules, whole, then the week's diary (from the Monday of the block's week) and email from that Monday (one line each: subject, people, first line; the same mail as a prep sees), plus the series' Teams chat if it names one. Claude reads the workspace itself, as for a prep. House rules aren't added: they're for preps, so a document's rules carry everything it needs.
+- **`own_block` series:** an event of your own with nobody else invited gets nothing ("your own block") unless a series names its subject. Marked `own_block`, the series matches only such a block (yours, nobody else in it): the same subject with other people in it is classified like any other meeting, and a block shown as free is still written for. There's no `weekly` slot to put it back: no block (on leave, say) means no draft. **It stays worth writing for the rest of its day**: you may write in it later, and a run that wakes after the block started (after a usage limit, say) still writes it. Later transcripts that day still update it.
 - **Claude only reads**, with read-only tools in your workspace and no connectors; this tool writes the files. Every prep starts `# [DRAFT]` until you've read it.
 - **A Microsoft 365 outage doesn't stop it.** On 13 Nov 2026 Graph returned 502s all morning, and every prep failed, one notification each. Now each run keeps a copy of the calendar it read; when the calendar can't be read, it plans from that copy (no older than `calendar_cache_days`) for the days the copy covers. Email, Teams, the diary and `context_commands` each degrade on their own, and a source that has failed isn't asked again in the same run. **A prep written without something says so in a line under its title**, such as *"Microsoft 365 unavailable (HTTP 502 Bad Gateway): email and Teams not read. Written from the calendar as read Thu 12 Nov 17:03; meeting changes since may be missing."* The pre-meeting refresh waits for email and Teams to come back rather than checking half. **One notification per outage**, when the first degraded prep is written or a third run in a row meets it; the outage ends once everything that failed has been read again. A prep still fails, and is still notified, for its own reasons: Claude failing, or the file. With no calendar and no recent copy, the run can't plan, and the watcher's "couldn't run" says so after three runs.
 

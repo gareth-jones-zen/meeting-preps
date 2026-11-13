@@ -19,7 +19,8 @@ public static class Cli
             meeting-preps sign-in                    sign in to Microsoft (once; opens a browser)
             meeting-preps plan [DATE] [DAYS]         which meetings get a prep, and when (default: the next 5 days)
             meeting-preps run [--dry-run]            write whatever is due, then refresh preps for meetings in the next hour
-            meeting-preps write DATE "<name>"        one prep now: the meeting that day with a person, or a series by subject
+            meeting-preps write DATE "<name>" [--out DIR]   one prep now: the meeting that day with a person, or a series
+                                                     by subject (--out: written into DIR, after_write not run)
             meeting-preps update <transcript>...     add "Update HH:MM" blocks to upcoming preps these transcripts touch
             meeting-preps hook                       the same, for teams-transcripts' after_run (its JSON on stdin)
             meeting-preps context "<name>"           what a prep would see for this person: email, Teams, diary
@@ -94,7 +95,32 @@ public static class Cli
         string[] commands = ["config", "sign-in", "plan", "run", "write", "update", "hook", "context", "prompt", "watch", "autostart"];
         if (!commands.Contains(command))
             throw new UsageException($"argument command: invalid choice: {Py.ReprString(command)}");
-        var flags = rest.Where(r => r.StartsWith("--", StringComparison.Ordinal)).ToList();
+        string? outDir = null;   // write --out DIR: written there, after_write not run
+        if (command == "write")
+        {
+            for (var k = 0; k < rest.Count; k++)
+            {
+                if (rest[k] == "--out")
+                {
+                    if (k + 1 >= rest.Count)
+                        throw new UsageException("argument --out: expected one argument");
+                    outDir = rest[k + 1];
+                    rest.RemoveRange(k, 2);
+                    k--;
+                }
+                else if (rest[k].StartsWith("--out=", StringComparison.Ordinal))
+                {
+                    outDir = rest[k]["--out=".Length..];
+                    rest.RemoveAt(k);
+                    k--;
+                }
+            }
+            if (outDir is { Length: 0 })
+                throw new UsageException("argument --out: expected one argument");
+            if (outDir is not null)
+                outDir = PyPath.Resolve(outDir);
+        }
+        var flags =rest.Where(r => r.StartsWith("--", StringComparison.Ordinal)).ToList();
         var positional = rest.Where(r => !r.StartsWith("--", StringComparison.Ordinal)).ToList();
         string[] allowed = command switch { "plan" => ["--json"], "run" => ["--dry-run"], _ => [] };
         foreach (var flag in flags)
@@ -179,7 +205,9 @@ public static class Cli
                 case "run":
                     return engine.Run(flags.Contains("--dry-run"));
                 case "write":
-                    engine.WriteOne(DateOnly.FromDateTime(PyTime.FromIso(positional[0])), positional[1]);
+                    foreach (var written in engine.WriteOne(DateOnly.FromDateTime(PyTime.FromIso(positional[0])), positional[1], outDir))
+                        if (outDir is not null)
+                            Print(host.Out, written);
                     return 0;
                 case "prompt":
                     Print(host.Out, engine.PromptFor(DateOnly.FromDateTime(PyTime.FromIso(positional[0])), positional[1]));

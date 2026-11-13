@@ -366,6 +366,9 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
 
     private string OutputPath(string file) => PyPath.Pure(Path.Combine(Config.Output, file));
 
+    /// <summary>Where a plan's file goes: its series' own folder, or output.</summary>
+    public string Target(PlanRow plan) => PyPath.Pure(Path.Combine(plan.Folder ?? Config.Output, plan.File!));
+
     private static bool Exists(string path) => File.Exists(path) || Directory.Exists(path);
 
     // ---- the pieces ---------------------------------------------------------------------------------------
@@ -379,6 +382,9 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
         var extras = new List<string> { Config.Output };
         if (!PyPath.Same(Config.History, Config.Output))
             extras.Add(Config.History);
+        foreach (var (_, series) in Config.SeriesInOrder)   // a series' own folder, where its earlier documents are
+            if (series.Folder is { } folder && !extras.Any(e => PyPath.Same(e, folder)))
+                extras.Add(folder);
         foreach (var extra in extras)
             if (!Config.IsRelativeTo(extra, Config.Workspace))
                 command.AddRange(["--add-dir", extra]);
@@ -489,12 +495,25 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
 
     public List<PlanRow> Plans(DateOnly start, int days) => PlanRows(start, days).Where(p => p.Decision == "prep").ToList();
 
-    /// <summary>Preps for meetings from now to the end of the next working day.</summary>
+    /// <summary>Preps for meetings from now to the end of the next working day. A block of your own (own_block) stays
+    /// in for the rest of its day: you may write in it later that day, and a run that wakes after it started (a usage
+    /// limit's retry, say) must still write it.</summary>
     public List<PlanRow> Upcoming(DateTime now)
     {
         var today = DateOnly.FromDateTime(now);
         var end = Planner.NextWorkingDay(today);
-        return Plans(today, end.DayNumber - today.DayNumber + 1).Where(p => PyTime.FromIso(p.Start) > now).ToList();
+        return Plans(today, end.DayNumber - today.DayNumber + 1)
+            .Where(p => PyTime.FromIso(p.Start) > now
+                        || (Config.Series(p.Series ?? "") is { OwnBlock: true } && p.Start[..10] == PyTime.Iso(today)))
+            .ToList();
+    }
+
+    /// <summary>{date}, {week}, {monday} and {file} for a plan, as the rules text can use them.</summary>
+    public (string Key, string Value)[] Tokens(PlanRow plan)
+    {
+        var day = DateOnly.FromDateTime(PyTime.FromIso(plan.Start));
+        return [("date", PyTime.Iso(day)), ("week", PyTime.Iso(Planner.WeekOf(day))), ("monday", PyTime.Iso(Planner.WeekStart(day))),
+            ("file", Config.Relative(Target(plan)))];
     }
 
     public static string When(PlanRow plan)
@@ -550,7 +569,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
             diary = $"(unavailable: {gaps["calendar"]})";
         }
         var note = GapsLine(gaps, failed);
-        var rules = Fill(kind.Rules, ("name", name), ("slug", Config.Person(plan.With ?? "")?.Slug ?? ""));
+        var rules = Fill(kind.Rules, [("name", name), ("slug", Config.Person(plan.With ?? "")?.Slug ?? ""), .. Tokens(plan)]);
         var companion = "";
         if (plan.Companion is { Length: > 0 })
             companion = PyMore.Format(PromptText.Companion, new Dictionary<string, string>
@@ -570,17 +589,66 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
         return (PyMore.Format(PromptText.Prep, values), note);
     }
 
+    /// <summary>The prompt for a document kind (a weekly update written in a block of your own): its rules, then the
+    /// week's diary and email (and Teams, if the series names a chat), without a prep's scaffolding. "The week" is
+    /// from the Monday of the block's week to now.</summary>
+    public (string Prompt, string Note) DocumentPrompt(PlanRow plan, DateTime now)
+    {
+        var kind = Config.Kinds[plan.Kind!];
+        var gaps = new OrderedDictionary<string, string>(StringComparer.Ordinal);
+        var failed = new List<string>();
+        var monday = Planner.WeekStart(DateOnly.FromDateTime(PyTime.FromIso(plan.Start)));
+        var since = Clock.Aware(monday.ToDateTime(TimeOnly.MinValue));
+        var series = plan.Series is not null ? Config.Series(plan.Series) : null;
+        var name = plan.With ?? plan.Subject;
+        var slug = Config.Person(plan.With ?? "")?.Slug ?? "";
+        var kindText = Fill(kind.Describe, ("name", name), ("slug", slug));
+        var mail = Read("email", () => Context.Mail(graph, Config, null, Clock, sinceTime: since, log: log), gaps);
+        var chat = series?.Chat;
+        var teams = chat is { Length: > 0 } ? Read("Teams", () => Context.Teams(graph, null, Clock, topic: chat, sinceTime: since), gaps) : null;
+        var extra = ContextCommands(kind, plan, failed);
+        string diary;
+        try
+        {
+            diary = Context.Diary(Config, Calendar(monday, 7).Items);
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            gaps["calendar"] = down.TryGetValue("calendar", out var why) && why.Length > 0 ? why : PyMore.Reason(error);
+            diary = $"(unavailable: {gaps["calendar"]})";
+        }
+        var note = GapsLine(gaps, failed);
+        var rules = Fill(kind.Rules, [("name", name), ("slug", slug), .. Tokens(plan)]);
+        var values = new Dictionary<string, string>
+        {
+            ["owner"] = Config.Owner, ["kind_text"] = kindText, ["subject"] = plan.Subject, ["when"] = When(plan),
+            ["now"] = F(now, "%A %d %B %Y %H:%M"), ["monday"] = F(monday.ToDateTime(TimeOnly.MinValue), "%a %d %b %Y"),
+            ["file"] = Config.Relative(Target(plan)),
+            ["previous"] = plan.Previous is { Length: > 0 } previous ? previous : "(none yet)",
+            ["kind_rules"] = rules + (extra.Length > 0 ? $"\n\n{extra}" : ""),
+            ["gaps"] = note.Length > 0 ? PyMore.Format(PromptText.Gaps, new Dictionary<string, string> { ["note"] = RemovePrefix(note, "> ") }) : "",
+            ["teams_note"] = teams is null ? "" : ", then the Teams messages in their chat",
+            ["diary"] = diary, ["mail"] = mail,
+            ["teams"] = teams is null ? "" : $"\n\nTeams messages this week (oldest first):\n{teams}",
+        };
+        return (PyMore.Format(PromptText.Document, values), note);
+    }
+
+    private (string Prompt, string Note) PromptOf(PlanRow plan, DateTime now) =>
+        Config.Kinds[plan.Kind!].Document ? DocumentPrompt(plan, now) : PrepPrompt(plan, now);
+
     private static string RemovePrefix(string text, string prefix) => text.StartsWith(prefix, StringComparison.Ordinal) ? text[prefix.Length..] : text;
 
     /// <summary>prompts.house(): the house rules, introduced, or nothing.</summary>
     public static string House(string rules) =>
         PyStr.Strip(rules).Length > 0 ? $"\nHouse rules, which win where they differ from the above:\n{PyStr.Strip(rules)}\n" : "";
 
-    /// <summary>Write one prep, and its companion if its kind has one. Returns the files written.</summary>
-    public List<string> Write(PlanRow plan)
+    /// <summary>Write one prep, and its companion if its kind has one, to their usual places or into outDir. Returns
+    /// the files written.</summary>
+    public List<string> Write(PlanRow plan, string? outDir = null)
     {
         var now = Clock.Now();
-        var (prompt, note) = PrepPrompt(plan, now);
+        var (prompt, note) = PromptOf(plan, now);
         log($"writing {plan.File}");
         var text = Claude(prompt, 3600);
         var cut = text.IndexOf("===COMPANION===", StringComparison.Ordinal);
@@ -597,7 +665,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
             log($"  written without some sources: {RemovePrefix(note, "> **Not everything could be read:** ")}");
         }
         var written = new List<string>();
-        var path = OutputPath(plan.File!);
+        var path = outDir is null ? Target(plan) : PyPath.Pure(Path.Combine(outDir, Planner.BaseName(plan.File!)));
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         PyStr.WriteText(path, prepText + "\n");
         written.Add(path);
@@ -607,7 +675,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
             var at = companionText.IndexOf("# [DRAFT]", StringComparison.Ordinal);
             if (at >= 0)
             {
-                var second = OutputPath(plan.Companion);
+                var second = outDir is null ? OutputPath(plan.Companion) : PyPath.Pure(Path.Combine(outDir, Planner.BaseName(plan.Companion)));
                 PyStr.WriteText(second, companionText[at..] + "\n");
                 written.Add(second);
                 log($"  companion: {PyStr.Split(Marks.Sub(" ", companionText)).Count} words");
@@ -634,7 +702,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
                 SettleOutage(ran: false);
             throw;
         }
-        var due = upcoming.Where(p => PyTime.FromIso(p.Due!) <= now && !Exists(OutputPath(p.File!))).ToList();
+        var due = upcoming.Where(p => PyTime.FromIso(p.Due!) <= now && !Exists(Target(p))).ToList();
         log($"run{(dryRun ? " (dry run)" : "")}: {due.Count} due");
         var failures = 0;
         foreach (var plan in due)
@@ -649,7 +717,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
             {
                 using (Lock(plan.File!, 60))
                 {
-                    if (Exists(OutputPath(plan.File!)))
+                    if (Exists(Target(plan)))
                         continue;
                     written = Write(plan);
                 }
@@ -729,7 +797,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
         var failures = 0;
         foreach (var plan in Upcoming(now))
         {
-            var prep = OutputPath(plan.File!);
+            var prep = Target(plan);
             var kind = Config.Kinds[plan.Kind!];
             if (!Exists(prep) || (!kind.EveryTranscript && !voices.Overlaps(NamesFor(plan))))
                 continue;
@@ -739,14 +807,21 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
             {
                 using (Lock(plan.File!))
                 {
-                    var block = PyStr.Strip(Claude(PyMore.Format(PromptText.Update, new Dictionary<string, string>
+                    var values = new Dictionary<string, string>
                     {
                         ["owner"] = Config.Owner, ["prep"] = Config.Relative(prep), ["subject"] = plan.Subject, ["when"] = When(plan),
                         ["now"] = F(now, "%A %d %B %Y %H:%M"), ["transcripts"] = string.Join(", ", transcripts.Select(Config.Relative)),
                         ["hhmm"] = F(Clock.Now(), "%H:%M"), ["source"] = source,
                         ["update_rules"] = kind.UpdateRules.Length > 0 ? " " + kind.UpdateRules : "",
                         ["house_rules"] = House(Config.HouseRules),
-                    }), 1800));
+                    };
+                    if (kind.Document)
+                    {
+                        var name = plan.With ?? plan.Subject;
+                        values["kind_text"] = Fill(kind.Describe, ("name", name), ("slug", ""));
+                        values["kind_rules"] = Fill(kind.Rules, [("name", name), ("slug", ""), .. Tokens(plan)]);
+                    }
+                    var block = PyStr.Strip(Claude(PyMore.Format(kind.Document ? PromptText.DocumentUpdate : PromptText.Update, values), 1800));
                     if (!block.StartsWith("> **Update", StringComparison.Ordinal))
                     {
                         log($"  nothing for {prepName}" + (block.StartsWith("NO UPDATE", StringComparison.Ordinal) ? "" : $": {PyStr.Head(block, 120)}"));
@@ -796,7 +871,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
             var start = PyTime.FromIso(plan.Start);
             if (plan.Series is not null || start - now > TimeSpan.FromMinutes(Config.RefreshWithinMinutes))
                 continue;
-            var prep = OutputPath(plan.File!);
+            var prep = Target(plan);
             var key = $"{plan.File}@{plan.Start}";
             if (!Exists(prep) || done.ContainsKey(key))
                 continue;
@@ -865,15 +940,17 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
         return failures > 0 ? 1 : 0;
     }
 
-    /// <summary>One prep now, whatever the time: the meeting on day with a person, or a series by subject.</summary>
-    public List<string> WriteOne(DateOnly day, string who)
+    /// <summary>One prep now, whatever the time: the meeting on day with a person, or a series by subject. With outDir,
+    /// it's written there instead, and after_write isn't run (a trial: nothing committed or queued).</summary>
+    public List<string> WriteOne(DateOnly day, string who, string? outDir = null)
     {
         var match = Plans(day, 1).FirstOrDefault(p => p.With == who || p.Series == who)
                     ?? throw new NoSuchMeetingException($"No meeting on {PyTime.Iso(day)} with {Py.ReprString(who)} that gets a prep.");
         List<string> written;
         using (Lock(match.File!, 60))
-            written = Write(match);
-        AfterWrite(Report("prep", match.Subject, match.Start, written.Select(Config.Relative)));
+            written = Write(match, outDir);
+        if (outDir is null)
+            AfterWrite(Report("prep", match.Subject, match.Start, written.Select(Config.Relative)));
         return written;
     }
 
@@ -883,6 +960,6 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
     {
         var match = Plans(day, 1).FirstOrDefault(p => p.With == who || p.Series == who)
                     ?? throw new NoSuchMeetingException($"No meeting on {PyTime.Iso(day)} with {Py.ReprString(who)} that gets a prep.");
-        return PrepPrompt(match, Clock.Now()).Prompt;
+        return PromptOf(match, Clock.Now()).Prompt;
     }
 }

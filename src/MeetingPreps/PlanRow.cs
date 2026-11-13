@@ -42,6 +42,8 @@ public sealed class PlanRow
     public string? Previous { get => Text("previous"); set => Set("previous", value); }
     public string? Companion { get => Text("companion"); set => Set("companion", value); }
     public string? NotAttending { get => Text("not_attending"); set => Set("not_attending", value); }
+    /// <summary>The series' own folder, when it has one (set only then, so other rows keep their keys).</summary>
+    public string? Folder { get => Text("folder"); set => Set("folder", value); }
 
     public (string Subject, string Start, string End)? Absorbed
     {

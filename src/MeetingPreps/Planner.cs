@@ -51,12 +51,28 @@ public static class Planner
     /// <summary>The Monday a weekly document is filed under: that day if it's a Monday, else the coming Monday.</summary>
     public static DateOnly WeekOf(DateOnly day) => day.AddDays((7 - PyTime.Weekday(day)) % 7);
 
+    /// <summary>The Monday of the day's own week: that day if it's a Monday, else the Monday before.</summary>
+    public static DateOnly WeekStart(DateOnly day) => day.AddDays(-PyTime.Weekday(day));
+
     /// <summary>The most recent prep of the same kind for an EARLIER meeting, searched recursively (archives count).
     /// Not one for this meeting: during a side-by-side trial another tool's prep for the same meeting exists, and
-    /// modelling on it copies it (10 Nov 2026).</summary>
-    public static string? LastPrep(Config config, string pattern, DateOnly before)
+    /// modelling on it copies it (10 Nov 2026). A series with its own folder is searched there, and only there (not in
+    /// its subfolders, which may hold other people's documents named the same way).</summary>
+    public static string? LastPrep(Config config, string pattern, DateOnly before, string? folder = null)
     {
-        var glob = pattern.Replace("{date}", "*").Replace("{week}", "*").Replace("{slug}", "*");
+        var glob = pattern.Replace("{date}", "*").Replace("{week}", "*").Replace("{monday}", "*").Replace("{slug}", "*");
+        if (folder is not null)
+        {
+            if (!Directory.Exists(folder))
+                return null;
+            var name = glob.Split('/', '\\')[^1];
+            var mine = Directory.EnumerateFiles(folder)
+                .Where(p => Glob(Path.GetFileName(p), name) && DatePrefix(Path.GetFileName(p))
+                            && string.CompareOrdinal(PyStr.Head(Path.GetFileName(p), 10), PyTime.Iso(before)) < 0)
+                .OrderBy(p => Path.GetFileName(p), PyStr.Order)
+                .ToList();
+            return mine.Count > 0 ? config.Relative(mine[^1]) : null;
+        }
         if (!Directory.Exists(config.History))
             return null;
         var cutoff = PyTime.Iso(before);
@@ -158,6 +174,8 @@ public static class Planner
         if (Py.Truthy(e["isAllDay"]) || begins == ends)
             return Skip(row, "all-day or marker");
         var series = config.Series(subject);
+        if (series is { OwnBlock: true } && !OwnBlock(config, e, others))
+            series = null;   // the same subject with other people in it is a meeting, classified as any other
         var showAs = Optional(e, "showAs");
         var declined = Field(e["responseStatus"], "response") == "declined" || showAs is "free" or "oof";
         if (declined && series is null)
@@ -165,9 +183,12 @@ public static class Planner
         var day = DateOnly.FromDateTime(begins);
         if (series is not null)
         {
-            if (declined)
+            if (declined && !series.OwnBlock)   // a block of your own shown as free is still yours to write in
                 row.NotAttending = "declined";
-            var file = PyMore.Format(series.File, new Dictionary<string, string> { ["date"] = PyTime.Iso(day), ["week"] = PyTime.Iso(WeekOf(day)) });
+            var file = PyMore.Format(series.File, new Dictionary<string, string>
+            {
+                ["date"] = PyTime.Iso(day), ["week"] = PyTime.Iso(WeekOf(day)), ["monday"] = PyTime.Iso(WeekStart(day)),
+            });
             var plan = row.Copy();
             plan.Decision = "prep";
             plan.Kind = series.Kind;
@@ -175,8 +196,10 @@ public static class Planner
             plan.Series = subject;
             plan.Due = PyTime.Iso(Due(config, series, begins), "minutes");
             plan.File = file;
-            plan.Exists = Exists(Path.Combine(config.Output, file));
-            plan.Previous = LastPrep(config, series.File, day);
+            if (series.Folder is not null)
+                plan.Folder = series.Folder;
+            plan.Exists = Exists(Path.Combine(series.Folder ?? config.Output, file));
+            plan.Previous = LastPrep(config, series.File, day, series.Folder);
             return plan;
         }
         if (others.Count == 0)
@@ -208,6 +231,16 @@ public static class Planner
     }
 
     private static bool Exists(string path) => File.Exists(path) || Directory.Exists(path);
+
+    /// <summary>One of your own blocks: nobody else in it, and (when the calendar says who organised it) organised by you.</summary>
+    private static bool OwnBlock(Config config, JsonObject e, List<string> others)
+    {
+        if (others.Count > 0)
+            return false;
+        if (e["organizer"] is not JsonObject org || org["emailAddress"] is not JsonObject address)
+            return true;
+        return Optional(address, "name") == config.Me || Field(address, "address").ToLowerInvariant() == config.Email;
+    }
 
     private static PlanRow Skip(PlanRow row, string why)
     {
