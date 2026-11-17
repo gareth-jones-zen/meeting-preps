@@ -47,7 +47,7 @@ public sealed class GitRepo
     {
         var commits = new JsonArray();
         foreach (var sha in Git("rev-list", "--reverse", "HEAD").Split('\n', StringSplitOptions.RemoveEmptyEntries).Skip(1))
-            commits.Add(new JsonObject
+            commits.Add((JsonNode)new JsonObject
             {
                 ["message"] = Git("log", "-1", "--format=%B", sha).TrimEnd('\n'),
                 ["files"] = Lines(Git("show", "--name-status", "-M", "--format=", sha)),

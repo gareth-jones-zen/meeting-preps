@@ -50,7 +50,7 @@ public static class Publish
                 var settings = Config.RelativeTo(config.Path, git.Repo) ?? Path.GetFileName(config.Path);
                 var message = Committer.Message(Subject(type, meeting, start, from),
                     $"Written automatically by meeting-preps ({settings}).", git.Trailers);
-                git.Open(line => log("  " + line)).Commit(message, files, push: git.Push);
+                git.Open(line => log("  " + line)).Commit(message, files.Select(f => Path.Combine(git.Repo, f)), push: git.Push);
             }
             catch (Exception error) when (error is not OutOfMemoryException)
             {
