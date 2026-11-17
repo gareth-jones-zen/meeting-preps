@@ -87,6 +87,15 @@ every_minutes = 5
 hours = "07:00-18:00"
 weekdays = true
 
+[git]                                   # optional: commit each file written (see Committing and review)
+repo = "."                              # the git repository the preps are in (relative to this file)
+push = true
+trailers = ["Co-Authored-By: Name <name@example.com>"]
+
+[review]                                # optional: an item in a review queue for each file written
+file = "%LOCALAPPDATA%/my-tools/review.json"
+source = "preps"
+
 [kind.direct-report]                    # one per kind
 describe = "weekly 1:1 with {name}, who reports to Alex"
 rules_file = "kinds/direct-report.md"   # or rules = "..."
@@ -156,6 +165,34 @@ Each point came from a prep engine that ran daily for a month before this tool w
 - **`own_block` series:** an event of your own with nobody else invited gets nothing ("your own block") unless a series names its subject. Marked `own_block`, the series matches only such a block (yours, nobody else in it): the same subject with other people in it is classified like any other meeting, and a block shown as free is still written for. There's no `weekly` slot to put it back: no block (on leave, say) means no draft. **It stays worth writing for the rest of its day**: you may write in it later, and a run that wakes after the block started (after a usage limit, say) still writes it. Later transcripts that day still update it.
 - **Claude only reads**, with read-only tools in your workspace and no connectors; this tool writes the files. Every prep starts `# [DRAFT]` until you've read it.
 - **A Microsoft 365 outage doesn't stop it.** On 13 Nov 2026 Graph returned 502s all morning, and every prep failed, one notification each. Now each run keeps a copy of the calendar it read; when the calendar can't be read, it plans from that copy (no older than `calendar_cache_days`) for the days the copy covers. Email, Teams, the diary and `context_commands` each degrade on their own, and a source that has failed isn't asked again in the same run. **A prep written without something says so in a line under its title**, such as *"Microsoft 365 unavailable (HTTP 502 Bad Gateway): email and Teams not read. Written from the calendar as read Thu 12 Nov 17:03; meeting changes since may be missing."* The pre-meeting refresh waits for email and Teams to come back rather than checking half. **One notification per outage**, when the first degraded prep is written or a third run in a row meets it; the outage ends once everything that failed has been read again. A prep still fails, and is still notified, for its own reasons: Claude failing, or the file. With no calendar and no recent copy, the run can't plan, and the watcher's "couldn't run" says so after three runs.
+
+## Committing and review
+
+**`[git]`** commits each file written into the repository it names, straight after writing it: only that file (or the
+prep and its companion), so nothing else changed or staged in the repository is swept up. The message says what
+happened, then where it came from, then your `trailers`:
+
+```
+Prep for Weekly 1-2-1 - Sam, Wed 11 Nov 10:00 [DRAFT]          (or "Update the Weekly 1-2-1 - Sam prep from <transcripts>",
+                                                                 or "Update the Weekly 1-2-1 - Sam prep from email and Teams")
+Written automatically by meeting-preps (tools/meeting-preps.toml).
+
+Co-Authored-By: Name <name@example.com>
+```
+
+With `push = true` it pushes after each commit; a push that fails is logged and the commit stays. A file written outside
+the repository (`write --out`, or an `output` somewhere else) is neither committed nor queued. `commit = false` keeps the
+section but commits nothing. It's [background-tools-lib](https://github.com/gareth-jones-zen/background-tools-lib)'s
+`RepoCommit`: git is run from the PATH, every path is literal, another git holding the index is waited for briefly, and
+the log has counts and the commit id, never contents.
+
+**`[review]`** puts an item in a **review queue** for each file written (background-tools-lib's `ReviewQueue`: one JSON
+file that whatever starts your day reads, shows you and clears). The item's type is `prep`, `update` or `refresh`, with
+`meeting`, `start`, `files` (relative to the repository, or to the workspace without `[git]`), `title` (`Weekly 1-2-1 -
+Sam, 2026-11-11 10:00`) and, for an update or refresh, `from`. The same item twice is kept once.
+
+Both happen after every write that runs `after_write` (not `write --out`), before it, and neither stops a run: a failure
+is logged. Either, both or neither: with neither, nothing is committed or queued.
 
 ## Hooks
 

@@ -98,6 +98,12 @@ public sealed class Config
     public string Owner { get; init; } = "you";
     public string HouseRules { get; init; } = "";
     public List<string> AfterWrite { get; init; } = [];
+
+    /// <summary>[git], or null: nothing committed. Commits each file written into the repository.</summary>
+    public RepoCommit.GitSettings? Git { get; init; }
+
+    /// <summary>[review], or null: nothing queued. An item for each file written into the repository.</summary>
+    public ReviewQueue.ReviewSettings? Review { get; init; }
     public string FirstThingBefore { get; init; } = "10:00";
     public string DayBeforeAt { get; init; } = "16:00";
     public string OnTheDayAt { get; init; } = "07:00";
@@ -265,6 +271,22 @@ public sealed class Config
         if (PyRegex.Problem(leavePattern) is { } problem)
             throw new SettingsException($"leave_pattern in {full} isn't a valid regular expression ({problem}).");
 
+        RepoCommit.GitSettings? git = null;
+        ReviewQueue.ReviewSettings? review = null;
+        try
+        {
+            if (raw.TryGetValue("git", out var gitSection))
+                git = RepoCommit.GitSettings.Read(gitSection, full, value => PathSetting(value, folder, env));
+            if (raw.TryGetValue("review", out var reviewSection))
+                review = ReviewQueue.ReviewSettings.Read(reviewSection, full, value => PathSetting(value, folder, env));
+        }
+        catch (FormatException error)
+        {
+            throw new SettingsException(error.Message);
+        }
+        if (git is not null && !Directory.Exists(git.Repo))
+            throw new SettingsException($"repo under [git] in {full} isn't a folder: {git.Repo}");
+
         var aliases = raw.TryGetValue("aliases", out var al) && al is TomlTable aliasTable
             ? aliasTable.Select(pair => new KeyValuePair<string, string>(pair.Key, Str(pair.Value))).ToList()
             : [];
@@ -295,6 +317,8 @@ public sealed class Config
             Owner = raw.TryGetValue("owner", out var owner) ? Str(owner) : "you",
             HouseRules = houseRules,
             AfterWrite = raw.TryGetValue("after_write", out var aw) && aw is TomlArray after ? after.Select(Str).ToList() : [],
+            Git = git,
+            Review = review,
             FirstThingBefore = raw.TryGetValue("first_thing_before", out var ftb) ? Str(ftb) : "10:00",
             DayBeforeAt = raw.TryGetValue("day_before_at", out var dba) ? Str(dba) : "16:00",
             OnTheDayAt = raw.TryGetValue("on_the_day_at", out var otd) ? Str(otd) : "07:00",

@@ -25,7 +25,8 @@ public sealed class CalendarUnavailableException(string message) : Exception(mes
 /// the next working day) against transcripts that have just landed, and adds a dated "Update HH:MM" block to each
 /// one they affect. **refresh**: once per 1:1, in the hour before it, email and Teams with that person since the
 /// prep was written are checked. **Claude runs headless in the workspace with read-only tools;** this writes the
-/// files. after_write is given a JSON report for every file written.
+/// files. Every file written is committed ([git]) and queued for review ([review]) if the settings say so, and
+/// after_write is given a JSON report for it.
 ///
 /// **A Microsoft 365 outage doesn't stop preps.** Each run reads the calendar once, for the next CalendarDays days,
 /// and keeps a copy (calendar_cache). When the read fails, the run plans from that copy, if it's no older than
@@ -435,6 +436,14 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
         return PyJson.Dump(report);
     }
 
+    /// <summary>After each file written: [git] commits it and [review] queues it (Publish), then after_write gets the
+    /// report. written: the files, in full.</summary>
+    private void Wrote(string type, string meeting, string start, IReadOnlyList<string> written, string? from = null)
+    {
+        Publish.After(Config, type, meeting, start, written, from, log, Clock.Now);
+        AfterWrite(Report(type, meeting, start, written.Select(Config.Relative), from));
+    }
+
     private void AfterWrite(string report)
     {
         if (Config.AfterWrite.Count == 0)
@@ -742,7 +751,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
                 host.Notify("Prep failed", [plan.Subject, $"Log: {Config.LogFile}"]);
                 continue;
             }
-            AfterWrite(Report("prep", plan.Subject, plan.Start, written.Select(Config.Relative)));
+            Wrote("prep", plan.Subject, plan.Start, written);
         }
         failures += Refresh(dryRun);
         if (!dryRun)
@@ -842,7 +851,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
                 log($"  FAILED update of {prepName}: {PyMore.ErrorText(error)}");
                 continue;
             }
-            AfterWrite(Report("update", plan.Subject, plan.Start, [Config.Relative(prep)], source));
+            Wrote("update", plan.Subject, plan.Start, [prep], source);
         }
         return failures > 0 ? 1 : 0;
     }
@@ -935,7 +944,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
                 continue;
             }
             SaveRefreshed(done);
-            AfterWrite(Report("refresh", plan.Subject, plan.Start, [Config.Relative(prep)], "email and Teams"));
+            Wrote("refresh", plan.Subject, plan.Start, [prep], "email and Teams");
         }
         return failures > 0 ? 1 : 0;
     }
@@ -950,7 +959,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
         using (Lock(match.File!, 60))
             written = Write(match, outDir);
         if (outDir is null)
-            AfterWrite(Report("prep", match.Subject, match.Start, written.Select(Config.Relative)));
+            Wrote("prep", match.Subject, match.Start, written);
         return written;
     }
 
