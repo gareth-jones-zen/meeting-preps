@@ -19,6 +19,20 @@ public static class Autostart
         }
         else if (action == "off")
             Print(host.Task.Disable() ? "Autostart is off." : "Autostart was already off.");
+        else if (action == "restart")
+        {
+            try
+            {
+                Print(host.Task.Restart()
+                    ? $"Restarted '{TaskName}': the watcher is running the installed version."
+                    : "Autostart is off, so there's nothing to restart. `meeting-preps autostart on` turns it on.");
+            }
+            catch (InvalidOperationException error)
+            {
+                host.Err.WriteLine(error.Message);
+                return 1;
+            }
+        }
         else
         {
             var info = host.Task.Status();

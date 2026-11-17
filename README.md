@@ -25,6 +25,8 @@ prep, and runs on Windows (x64).
 
 It holds two programs: `meeting-preps.exe`, for a console, and `meeting-preps-background.exe`, the same program with no window, which the logon task runs.
 
+**To upgrade while the watcher runs:** rename `meeting-preps.exe` and `meeting-preps-background.exe` to `.old` (Windows lets you rename a program that's running, but not overwrite it), unzip the new release into the same folder, then run `meeting-preps autostart restart`. That stops the watcher, waits for it to exit and starts the new version, keeping the task as it was. Delete the `.old` files afterwards. If the old watcher hasn't exited after 30 seconds, nothing is started and it carries on as it was.
+
 It needs **Claude Code** installed and signed in, on a plan that allows your mail and meeting content. It's heavy on usage (an Opus run per prep), so a prep that meets the usage limit is queued and written after the reset, with one notification per limit.
 
 ## Getting started

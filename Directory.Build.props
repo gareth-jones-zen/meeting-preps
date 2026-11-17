@@ -8,7 +8,7 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Version>1.2.0-dev</Version>
+    <Version>1.3.0-dev</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Authors>Gareth Jones</Authors>
     <RepositoryUrl>https://github.com/gareth-jones-zen/meeting-preps</RepositoryUrl>

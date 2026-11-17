@@ -26,7 +26,7 @@ public static class Cli
             meeting-preps context "<name>"           what a prep would see for this person: email, Teams, diary
             meeting-preps prompt DATE "<name>"       the prompt a prep would be written from; nothing written, Claude not run
             meeting-preps watch                      a run every few minutes in working hours; what autostart runs
-            meeting-preps autostart on               the watcher at every logon, and now (off, status)
+            meeting-preps autostart on               the watcher at every logon, and now (off, restart, status)
 
         options: --config FILE (default %APPDATA%\meeting-preps\config.toml), --version
         """;
@@ -142,8 +142,8 @@ public static class Cli
             case "context": Count(1, 1, "name"); break;
             case "autostart":
                 Count(1, 1, "action");
-                if (positional[0] is not ("on" or "off" or "status"))
-                    throw new UsageException($"argument action: invalid choice: {Py.ReprString(positional[0])} (choose from on, off, status)");
+                if (positional[0] is not ("on" or "off" or "restart" or "status"))
+                    throw new UsageException($"argument action: invalid choice: {Py.ReprString(positional[0])} (choose from on, off, restart, status)");
                 break;
         }
         var planDays = 5;
