@@ -1,0 +1,265 @@
+[
+ {
+  "name": "prep",
+  "written": {
+   "meetings/preps/2026-11-18-ben-wolstencroft-1to1-prep.md": "# [DRAFT] Ben\n",
+   "meetings/preps/2026-11-18-john-lyons-1to1-preread.md": "# Pre-read\n"
+  },
+  "report": {
+   "type": "prep",
+   "meeting": "Weekly 1-2-1 - Ben",
+   "start": "2026-11-18T08:45",
+   "files": [
+    "meetings/preps/2026-11-18-ben-wolstencroft-1to1-prep.md",
+    "meetings/preps/2026-11-18-john-lyons-1to1-preread.md"
+   ]
+  },
+  "commits": [
+   {
+    "message": "Prep for Weekly 1-2-1 - Ben, Wed 18 Nov 08:45 [DRAFT]\n\nWritten automatically by meeting-preps (tools/meeting-preps.toml).\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+    "files": [
+     "A\tmeetings/preps/2026-11-18-ben-wolstencroft-1to1-prep.md",
+     "A\tmeetings/preps/2026-11-18-john-lyons-1to1-preread.md"
+    ]
+   }
+  ],
+  "status": [],
+  "notes": [],
+  "items": [
+   {
+    "id": "8e821939",
+    "source": "preps",
+    "type": "prep",
+    "added": "2026-11-17T09:30:05",
+    "meeting": "Weekly 1-2-1 - Ben",
+    "start": "2026-11-18T08:45",
+    "files": [
+     "meetings/preps/2026-11-18-ben-wolstencroft-1to1-prep.md",
+     "meetings/preps/2026-11-18-john-lyons-1to1-preread.md"
+    ],
+    "title": "Weekly 1-2-1 - Ben, 2026-11-18 08:45"
+   }
+  ]
+ },
+ {
+  "name": "update",
+  "committed": {
+   "meetings/preps/2026-11-18-sam-jones-prep.md": "# [DRAFT] Sam\n"
+  },
+  "written": {
+   "meetings/preps/2026-11-18-sam-jones-prep.md": "# [DRAFT] Sam\n\n> **Update 12:00** news\n"
+  },
+  "report": {
+   "type": "update",
+   "meeting": "Sam 1:1",
+   "start": "2026-11-18T11:00",
+   "files": [
+    "meetings/preps/2026-11-18-sam-jones-prep.md"
+   ],
+   "from": "work sam"
+  },
+  "commits": [
+   {
+    "message": "Update the Sam 1:1 prep from work sam\n\nWritten automatically by meeting-preps (tools/meeting-preps.toml).\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+    "files": [
+     "M\tmeetings/preps/2026-11-18-sam-jones-prep.md"
+    ]
+   }
+  ],
+  "status": [],
+  "notes": [],
+  "items": [
+   {
+    "id": "7fb5d189",
+    "source": "preps",
+    "type": "update",
+    "added": "2026-11-17T09:30:05",
+    "meeting": "Sam 1:1",
+    "start": "2026-11-18T11:00",
+    "files": [
+     "meetings/preps/2026-11-18-sam-jones-prep.md"
+    ],
+    "title": "Sam 1:1, 2026-11-18 11:00",
+    "from": "work sam"
+   }
+  ]
+ },
+ {
+  "name": "refresh",
+  "committed": {
+   "meetings/preps/2026-11-18-sam-jones-prep.md": "# [DRAFT] Sam\n"
+  },
+  "written": {
+   "meetings/preps/2026-11-18-sam-jones-prep.md": "# [DRAFT] Sam\n\n> **Update 10:05** email\n"
+  },
+  "report": {
+   "type": "refresh",
+   "meeting": "Sam 1:1",
+   "start": "2026-11-18T11:00",
+   "files": [
+    "meetings/preps/2026-11-18-sam-jones-prep.md"
+   ],
+   "from": "email and Teams"
+  },
+  "commits": [
+   {
+    "message": "Update the Sam 1:1 prep from email and Teams\n\nWritten automatically by meeting-preps (tools/meeting-preps.toml).\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+    "files": [
+     "M\tmeetings/preps/2026-11-18-sam-jones-prep.md"
+    ]
+   }
+  ],
+  "status": [],
+  "notes": [],
+  "items": [
+   {
+    "id": "a1e51b3a",
+    "source": "preps",
+    "type": "refresh",
+    "added": "2026-11-17T09:30:05",
+    "meeting": "Sam 1:1",
+    "start": "2026-11-18T11:00",
+    "files": [
+     "meetings/preps/2026-11-18-sam-jones-prep.md"
+    ],
+    "title": "Sam 1:1, 2026-11-18 11:00",
+    "from": "email and Teams"
+   }
+  ]
+ },
+ {
+  "name": "unchanged",
+  "committed": {
+   "meetings/preps/2026-11-18-sam-jones-prep.md": "# [DRAFT] Sam\n"
+  },
+  "written": {
+   "meetings/preps/2026-11-18-sam-jones-prep.md": "# [DRAFT] Sam\n"
+  },
+  "report": {
+   "type": "update",
+   "meeting": "Sam 1:1",
+   "start": "2026-11-18T11:00",
+   "files": [
+    "meetings/preps/2026-11-18-sam-jones-prep.md"
+   ],
+   "from": "work sam"
+  },
+  "commits": [],
+  "status": [],
+  "notes": [],
+  "items": [
+   {
+    "id": "7fb5d189",
+    "source": "preps",
+    "type": "update",
+    "added": "2026-11-17T09:30:05",
+    "meeting": "Sam 1:1",
+    "start": "2026-11-18T11:00",
+    "files": [
+     "meetings/preps/2026-11-18-sam-jones-prep.md"
+    ],
+    "title": "Sam 1:1, 2026-11-18 11:00",
+    "from": "work sam"
+   }
+  ]
+ },
+ {
+  "name": "trial",
+  "written_outside": {
+   "2026-11-18-x-prep.md": "# [DRAFT] X\n"
+  },
+  "report": {
+   "type": "prep",
+   "meeting": "X 1:1",
+   "start": "2026-11-18T08:45",
+   "files": [
+    "<outside>/2026-11-18-x-prep.md"
+   ]
+  },
+  "commits": [],
+  "status": [],
+  "notes": [],
+  "items": []
+ },
+ {
+  "name": "mixed",
+  "written": {
+   "meetings/preps/2026-11-19-zoe-example-prep.md": "# [DRAFT] Zoë\n"
+  },
+  "written_outside": {
+   "2026-11-19-copy.md": "x\n"
+  },
+  "untracked": {
+   "scratch.md": "a session's own file\n"
+  },
+  "report": {
+   "type": "prep",
+   "meeting": "Zoë catch-up",
+   "start": "2026-11-19T09:00:00",
+   "files": [
+    "meetings/preps/2026-11-19-zoe-example-prep.md",
+    "<outside>/2026-11-19-copy.md"
+   ]
+  },
+  "commits": [
+   {
+    "message": "Prep for Zoë catch-up, Thu 19 Nov 09:00 [DRAFT]\n\nWritten automatically by meeting-preps (tools/meeting-preps.toml).\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+    "files": [
+     "A\tmeetings/preps/2026-11-19-zoe-example-prep.md"
+    ]
+   }
+  ],
+  "status": [
+   "?? scratch.md"
+  ],
+  "notes": [],
+  "items": [
+   {
+    "id": "cb518238",
+    "source": "preps",
+    "type": "prep",
+    "added": "2026-11-17T09:30:05",
+    "meeting": "Zoë catch-up",
+    "start": "2026-11-19T09:00:00",
+    "files": [
+     "meetings/preps/2026-11-19-zoe-example-prep.md"
+    ],
+    "title": "Zoë catch-up, 2026-11-19 09:00"
+   }
+  ]
+ },
+ {
+  "name": "failing-hook",
+  "failing_hook": true,
+  "written": {
+   "meetings/preps/2026-11-18-ben-wolstencroft-1to1-prep.md": "# [DRAFT] Ben\n"
+  },
+  "report": {
+   "type": "prep",
+   "meeting": "Weekly 1-2-1 - Ben",
+   "start": "2026-11-18T08:45",
+   "files": [
+    "meetings/preps/2026-11-18-ben-wolstencroft-1to1-prep.md"
+   ]
+  },
+  "commits": [],
+  "status": [
+   "A  meetings/preps/2026-11-18-ben-wolstencroft-1to1-prep.md"
+  ],
+  "notes": [],
+  "items": [
+   {
+    "id": "c3acbcf4",
+    "source": "preps",
+    "type": "prep",
+    "added": "2026-11-17T09:30:05",
+    "meeting": "Weekly 1-2-1 - Ben",
+    "start": "2026-11-18T08:45",
+    "files": [
+     "meetings/preps/2026-11-18-ben-wolstencroft-1to1-prep.md"
+    ],
+    "title": "Weekly 1-2-1 - Ben, 2026-11-18 08:45"
+   }
+  ]
+ }
+]
