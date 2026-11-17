@@ -60,8 +60,20 @@ public sealed class Config
     public const string EnvConfig = "MEETING_PREPS_CONFIG";
     public const string DefaultLeavePattern = @"^(\w+ )?(holidays?|annual leave|leave|bank holiday)\b";
 
+    /// <summary>Every top-level setting this file accepts (tables included): the ones a base file can supply.
+    /// time_zone is the shared name for timezone.</summary>
+    public static readonly string[] KnownKeys =
+    [
+        "me", "email", "workspace", "output", "history", "kind", "person", "series", "aliases", "org_domain", "login_hint",
+        "tenant", "msal_cache", "model", "owner", "house_rules", "house_rules_file", "after_write", "git", "review",
+        "first_thing_before", "day_before_at", "on_the_day_at", "refresh_within_minutes", "leave_pattern", "mail_skip_folders",
+        "noise_senders", "noise_rules", "timezone", "time_zone", "scopes", "watch", "log_file", "state_file", "calendar_cache",
+        "calendar_cache_days",
+    ];
+
     public const string Template = """
         # meeting-preps settings. See the README.
+        # base = "base-config.toml"   # optional: settings shared with other tools
         me = "Your Name"
         email = "you@example.com"
         workspace = "~/Documents/Meetings"
@@ -217,7 +229,15 @@ public sealed class Config
             var text = PyStr.ReadText(full);
             if (text.StartsWith('\ufeff'))
                 throw new SettingsException("Invalid statement (at line 1, column 1)");   // tomllib refuses a byte order mark
-            raw = TomlSerializer.Deserialize(text, TomlContext.Default.TomlTable) ?? [];
+            // With the base file it names, if any: its [paths] are variables for the paths here (so env is replaced),
+            // and its settings this file knows and doesn't set are added.
+            var read = BaseSettings.Read(text, full, env, KnownKeys);
+            raw = read.Raw;
+            env = read.Env;
+        }
+        catch (FormatException error)
+        {
+            throw new SettingsException(error.Message);   // the base: missing, unreadable, or naming a base itself
         }
         catch (Exception error) when (error is not (IOException or UnauthorizedAccessException or SettingsException))
         {
@@ -329,7 +349,8 @@ public sealed class Config
                 : ["junk email", "drafts", "outbox"],
             NoiseRules = Optional("noise_rules") is { } rules ? PathSetting(rules, folder, env) : null,
             NoiseSenders = raw.TryGetValue("noise_senders", out var ns) && ns is TomlArray senders ? senders.Select(Str).ToList() : [],
-            TimeZone = raw.TryGetValue("timezone", out var tz) ? Str(tz) : "GMT Standard Time",
+            // timezone, or the shared time_zone (a base file's name for it); timezone wins.
+            TimeZone = raw.TryGetValue("timezone", out var tz) || raw.TryGetValue("time_zone", out tz) ? Str(tz) : "GMT Standard Time",
             Scopes = raw.TryGetValue("scopes", out var sc) && sc is TomlArray scopes ? scopes.Select(Str).ToList() : ["Calendars.Read", "Mail.Read", "Chat.Read"],
             WatchEveryMinutes = watch.TryGetValue("every_minutes", out var every) ? Int(every) : 5,
             WatchHours = (hours.Split('-')[0], hours.Split('-')[1]),

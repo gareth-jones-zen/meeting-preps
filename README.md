@@ -53,11 +53,27 @@ meeting-preps autostart on
 
 `--config FILE` names another settings file (or set `MEETING_PREPS_CONFIG`); `--version` says which build this is. Exit codes: 0; 1 when a run had failures or couldn't read the calendar; 2 for settings, sign-in, "no such meeting" and usage errors; 3 from `watch` when another watcher is already running for the same settings.
 
+## Sharing settings with other tools: `base`
+
+Several tools built on the shared library can keep their common settings in one file, named at the top of each
+tool's settings with `base = "base-config.toml"` (relative to the settings file). Then:
+
+- **the base's `[paths]` are variables for this tool's paths**: `ROOT = "%LOCALAPPDATA%/tools"` there lets this file
+  say `log_file = "%ROOT%/meeting-preps.log"`. They're looked up before the environment;
+- **its other settings that this tool knows and doesn't set itself are used**: typically `login_hint`, `tenant`,
+  `msal_cache` and `time_zone` (this tool's `timezone`, which wins if both are given). This file's own value always wins;
+- **a table such as `[git]` or `[review]` applies only if this file has that section too** (even empty), and its keys
+  fill in the ones this file leaves out: a shared `repo`, `push`, `trailers`, queue `file` and `lock`, with `source`
+  set here.
+
+The loader is background-tools-lib's `PyCompat.BaseSettings`. A missing or unreadable base is a settings error.
+
 ## Settings
 
 `%APPDATA%\meeting-preps\config.toml` by default. Everything about you lives here, not in the code:
 
 ```toml
+base = "base-config.toml"   # optional: settings shared with other tools
 me = "Alex Smith"                       # your name as calendar invites show it
 email = "alex.smith@example.com"        # your address, for telling your mail from others'
 org_domain = "example.com"              # optional: external mail counts only with someone from here on it
@@ -77,7 +93,7 @@ leave_pattern = '^(\w+ )?(holidays?|annual leave|leave|bank holiday)\b'   # your
 mail_skip_folders = ["junk email", "drafts", "outbox"]   # folder names (starting with) that are noise
 noise_senders = ['receipts@shop\.example']   # optional: more sender patterns that are noise
 noise_rules = "mail-triage.toml"        # optional: a mail-triage settings file; its delete rules mark noise
-timezone = "GMT Standard Time"          # Windows time zone name, for the calendar
+timezone = "GMT Standard Time"          # Windows time zone name, for the calendar (time_zone also works)
 scopes = ["Calendars.Read", "Mail.Read", "Chat.Read"]   # optional: what to sign in for
 calendar_cache_days = 3                 # in an outage, plan from the last good calendar read if it's this recent
 calendar_cache = "calendar.json"        # optional: where that copy is kept (default: beside state_file, as <state>.calendar.json)
