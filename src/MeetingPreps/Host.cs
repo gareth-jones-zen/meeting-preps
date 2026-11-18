@@ -65,6 +65,22 @@ public sealed class PrepsHost
     /// <summary>meeting-preps-background.exe: what the autostart task runs.</summary>
     public string BackgroundExe { get; init; } = Path.Combine(AppContext.BaseDirectory, "meeting-preps-background.exe");
 
+    /// <summary>Starts the queue runner in the background and returns at once (the runner holds a lock, so a second
+    /// one just exits). The default starts this tool's own `run-queue`, windowless.</summary>
+    public Action? StartRunner { get; init; }
+
+    public void StartQueueRunner()
+    {
+        if (StartRunner is not null)
+        {
+            StartRunner();
+            return;
+        }
+        var info = new System.Diagnostics.ProcessStartInfo(BackgroundExe) { UseShellExecute = false, CreateNoWindow = true };
+        info.ArgumentList.Add("run-queue");
+        using var _ = System.Diagnostics.Process.Start(info);
+    }
+
     public ITask Task { get; init; } = new ScheduledTask(Autostart.TaskName, Autostart.Description, Autostart.Results);
 
     /// <summary>Waiting between watcher ticks; tests give one that advances a fake clock.</summary>

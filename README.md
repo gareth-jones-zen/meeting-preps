@@ -226,6 +226,14 @@ is logged. Either, both or neither: with neither, nothing is committed or queued
 
 **`hook`** reads a transcript tool's report on stdin and updates the preps those transcripts touch: a JSON list of results with a `path` (or `file`), `{"written": [...]}`, or plain paths, one a line. Only `.md` and `.txt` files count.
 
+- **`hook_include` and `hook_exclude`** (1.5.0) say which of them are transcripts: globs relative to `workspace`, where
+  `*` matches across folders (`["team/*.md", "meetings/*.md"]`, and `["*/performance-reviews/*"]` to leave a review's
+  transcript out of everyone's preps). By default every `.md` and `.txt` counts.
+- **`hook_queue = true`** (1.5.0) puts the update on the seat's Claude job queue (background-tools-lib's
+  ClaudeHeadless), **at the front**, since a prep has a meeting to beat, and starts the queue runner in the background
+  (`meeting-preps run-queue`; a second runner just exits). The hook returns at once, so whatever ran it (doc-filer's
+  after-run, say) isn't held up while Claude reads the preps, and a usage limit waits in the queue like any other job.
+
 ## Building
 
 It's .NET 11, published as Native AOT. It needs [background-tools-lib](https://github.com/gareth-jones-zen/background-tools-lib)

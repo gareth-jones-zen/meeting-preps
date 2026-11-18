@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using ClaudeHeadless;
 using M365Graph;
 using PyCompat;
 using WinBackground;
@@ -92,7 +93,7 @@ public static class Cli
             throw new UsageException("the following arguments are required: command");
         var command = argv[i];
         rest.AddRange(argv.Skip(i + 1));
-        string[] commands = ["config", "sign-in", "plan", "run", "write", "update", "hook", "context", "prompt", "watch", "autostart"];
+        string[] commands = ["config", "sign-in", "plan", "run", "write", "update", "hook", "context", "prompt", "watch", "autostart", "run-queue"];
         if (!commands.Contains(command))
             throw new UsageException($"argument command: invalid choice: {Py.ReprString(command)}");
         string? outDir = null;   // write --out DIR: written there, after_write not run
@@ -135,7 +136,7 @@ public static class Cli
         }
         switch (command)
         {
-            case "config" or "sign-in" or "run" or "hook" or "watch": Count(0, 0, ""); break;
+            case "config" or "sign-in" or "run" or "hook" or "watch" or "run-queue": Count(0, 0, ""); break;
             case "plan": Count(0, 2, ""); break;
             case "write" or "prompt": Count(2, 2, "date, who"); break;
             case "update": Count(1, int.MaxValue, "transcripts"); break;
@@ -169,6 +170,20 @@ public static class Cli
             return Autostart.Command(positional[0], config, host);
         if (command == "watch")
             return Watch.Run(config, host);
+        if (command == "run-queue")   // the seat's queue of Claude jobs (background-tools-lib's ClaudeHeadless), as the hook starts it
+            return HeadlessCli.Run(["run-queue"], new HeadlessHost { Out = host.Out, Err = host.Err, LogEcho = host.LogEcho, Queue = host.Queue });
+        if (command == "hook" && config.HookQueue)
+        {
+            var transcripts = HookPaths(host.Stdin().ReadToEnd()).Where(p => File.Exists(p) && config.HookWants(p)).Select(PyPath.Resolve).ToList();
+            if (transcripts.Count == 0)
+                return 0;
+            var queueLog = Logger.Create(config.LogFile, host.LogEcho, stampEcho: false, clock: host.Clock.Now);
+            host.Queue.Add([host.Exe, "--config", config.Path, "update", .. transcripts], config.Workspace, front: true);
+            queueLog($"hook: queued an update of upcoming preps against {transcripts.Count} transcript(s): "
+                     + string.Join(", ", transcripts.Select(config.Relative)));
+            host.StartQueueRunner();
+            return 0;
+        }
 
         var log = Logger.Create(config.LogFile, host.LogEcho, stampEcho: false, clock: host.Clock.Now);
         try
@@ -215,7 +230,7 @@ public static class Cli
                 case "update":
                     return engine.Update(positional);
                 case "hook":
-                    return engine.Update(HookPaths(host.Stdin().ReadToEnd()));
+                    return engine.Update(HookPaths(host.Stdin().ReadToEnd()).Where(p => !File.Exists(p) || config.HookWants(p)));
             }
         }
         catch (SignInNeededException error)

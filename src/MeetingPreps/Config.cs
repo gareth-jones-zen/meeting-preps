@@ -68,7 +68,7 @@ public sealed class Config
         "tenant", "msal_cache", "model", "owner", "house_rules", "house_rules_file", "after_write", "git", "review",
         "first_thing_before", "day_before_at", "on_the_day_at", "refresh_within_minutes", "leave_pattern", "mail_skip_folders",
         "noise_senders", "noise_rules", "timezone", "time_zone", "scopes", "watch", "log_file", "state_file", "calendar_cache",
-        "calendar_cache_days",
+        "calendar_cache_days", "hook_include", "hook_exclude", "hook_queue",
     ];
 
     public const string Template = """
@@ -91,6 +91,25 @@ public sealed class Config
         """;
 
     public required string Path { get; init; }
+
+    /// <summary>1.5.0: which files `hook` takes as transcripts (globs relative to workspace, `*` across folders): any
+    /// .md or .txt by default; hook_exclude leaves some out (performance reviews, say).</summary>
+    public IReadOnlyList<string> HookInclude { get; init; } = ["*"];
+    public IReadOnlyList<string> HookExclude { get; init; } = [];
+
+    /// <summary>1.5.0: true, and `hook` puts the update on the claude-headless queue, at the front (a meeting to beat),
+    /// and starts the queue runner, rather than running it there and then (holding up whatever ran the hook).</summary>
+    public bool HookQueue { get; init; }
+
+    /// <summary>Whether `hook` takes this file: inside the workspace, matching hook_include and not hook_exclude.</summary>
+    public bool HookWants(string file)
+    {
+        if (RelativeTo(PyPath.Resolve(file), Workspace) is not { } rel)
+            return false;
+        static bool Match(string path, string glob) => System.IO.Enumeration.FileSystemName.MatchesSimpleExpression(glob, path, ignoreCase: true);
+        return HookInclude.Any(g => Match(rel, g)) && !HookExclude.Any(g => Match(rel, g));
+    }
+
     public required string Me { get; init; }
     public required string Email { get; init; }
     public required string Workspace { get; init; }
@@ -316,9 +335,16 @@ public sealed class Config
         var houseRules = Truthy(raw, "house_rules_file")
             ? TextSetting(raw, "house_rules", folder, full, env)
             : HouseRulesFile(raw, folder, full, env);
+        List<string> Globs(string key, List<string> fallback) =>
+            !raw.TryGetValue(key, out var value) ? fallback
+                : value is TomlArray a && a.All(x => x is string) ? a.Cast<string>().ToList()
+                : throw new SettingsException($"{key} in {full} should be a list of globs");
         return new Config
         {
             Path = full,
+            HookInclude = Globs("hook_include", ["*"]),
+            HookExclude = Globs("hook_exclude", []),
+            HookQueue = raw.TryGetValue("hook_queue", out var hq) && (hq is bool hb ? hb : throw new SettingsException($"hook_queue in {full} should be true or false")),
             Me = Str(raw["me"]),
             Email = Str(raw["email"]).ToLowerInvariant(),
             Workspace = workspace,
