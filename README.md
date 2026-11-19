@@ -97,6 +97,7 @@ timezone = "GMT Standard Time"          # Windows time zone name, for the calend
 scopes = ["Calendars.Read", "Mail.Read", "Chat.Read"]   # optional: what to sign in for
 calendar_cache_days = 3                 # in an outage, plan from the last good calendar read if it's this recent
 calendar_cache = "calendar.json"        # optional: where that copy is kept (default: beside state_file, as <state>.calendar.json)
+originals = "%LOCALAPPDATA%/my-tools/originals"   # optional, for a workspace without git: each file as written (see Committing and review)
 state_file = "state.json"               # optional: the refresh and outage record (default: in %LOCALAPPDATA%\meeting-preps)
 log_file = "meeting-preps.log"          # optional (default: in %LOCALAPPDATA%\meeting-preps)
 
@@ -106,7 +107,7 @@ hours = "07:00-18:00"
 weekdays = true
 
 [git]                                   # optional: commit each file written (see Committing and review)
-repo = "."                              # the git repository the preps are in (relative to this file)
+repo = "."                              # the git repository's top, which the preps are in (relative to this file)
 push = true
 trailers = ["Co-Authored-By: Name <name@example.com>"]
 
@@ -203,6 +204,19 @@ the repository (`write --out`, or an `output` somewhere else) is neither committ
 section but commits nothing. It's [background-tools-lib](https://github.com/gareth-jones-zen/background-tools-lib)'s
 `RepoCommit`: git is run from the PATH, every path is literal, another git holding the index is waited for briefly, and
 the log has counts and the commit id, never contents.
+
+**git is optional.** With `[git]` but no git installed, or a `repo` that isn't a git repository, or a folder *inside*
+one rather than its top (nothing is committed into a repository the folder only sits in), the preps are written and
+queued as usual, and one log line says "git: not committing: ..." (once a process: once a logon for the watcher; after
+`git init`, `autostart restart` to start committing). Nothing is notified. With `push = true` and a branch with no
+upstream (no remote), the commit stays and no push is tried; one log line says so.
+
+**`originals`** keeps each file as this tool wrote it, in a folder outside the workspace, at the same relative path
+(`originals/preps/2026-11-11-sam-jones-1to1-prep.md`), replaced by each later write of that file (an update, a refresh),
+never by yours. **It's for a workspace without git**: to see what you changed in a draft before using it (your edits
+to a weekly update are the best guide to improving its rules), compare the file with its original. With git, the
+draft's commit does that, so leave it unset. It must be outside the workspace; a copy that fails is logged and never
+stops a run.
 
 **`[review]`** puts an item in a **review queue** for each file written (background-tools-lib's `ReviewQueue`: one JSON
 file that whatever starts your day reads, shows you and clears). The item's type is `prep`, `update` or `refresh`, with

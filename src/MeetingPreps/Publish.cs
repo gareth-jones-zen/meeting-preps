@@ -34,10 +34,38 @@ public static class Publish
             .OfType<string>().Where(path => path != ".").ToList();
     }
 
-    /// <summary>[git] and [review] for one write: type is prep, update or refresh; written the files, in full.</summary>
+    /// <summary>originals: a copy of each file written inside the workspace, as written, at the same relative path under
+    /// the originals folder, replacing the copy from the last write. So with no git, what the person changed in a draft is
+    /// the file against its original. Nothing here stops a run: a failure is logged.</summary>
+    public static void Keep(Config config, IEnumerable<string> written, Action<string> log)
+    {
+        if (config.Originals is not { } originals)
+            return;
+        foreach (var path in written.Where(File.Exists))
+        {
+            if (Config.RelativeTo(PyPath.Resolve(path), config.Workspace) is not { } relative || relative == ".")
+                continue;
+            try
+            {
+                var copy = Path.Combine(originals, relative.Replace('/', Path.DirectorySeparatorChar));
+                Directory.CreateDirectory(Path.GetDirectoryName(copy)!);
+                File.Copy(path, copy, overwrite: true);
+                log($"  originals: kept {relative} as written");
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                log($"  originals: couldn't keep {relative}: {error.Message}");
+            }
+        }
+    }
+
+    /// <summary>originals, then [git] and [review], for one write: type is prep, update or refresh; written the files, in
+    /// full. git not set up here (not installed, not a repository) is the library's one log line a process, and nothing
+    /// else.</summary>
     public static void After(Config config, string type, string meeting, string start, IReadOnlyList<string> written, string? from,
         Action<string> log, Func<DateTime> clock)
     {
+        Keep(config, written, log);
         if (config.Git is null && config.Review is null)
             return;
         var files = Inside(config, written);

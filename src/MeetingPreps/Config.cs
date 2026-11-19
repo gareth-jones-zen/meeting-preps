@@ -68,7 +68,7 @@ public sealed class Config
         "tenant", "msal_cache", "model", "owner", "house_rules", "house_rules_file", "after_write", "git", "review",
         "first_thing_before", "day_before_at", "on_the_day_at", "refresh_within_minutes", "leave_pattern", "mail_skip_folders",
         "noise_senders", "noise_rules", "timezone", "time_zone", "scopes", "watch", "log_file", "state_file", "calendar_cache",
-        "calendar_cache_days", "hook_include", "hook_exclude", "hook_queue",
+        "calendar_cache_days", "hook_include", "hook_exclude", "hook_queue", "originals",
     ];
 
     public const string Template = """
@@ -132,6 +132,11 @@ public sealed class Config
 
     /// <summary>[git], or null: nothing committed. Commits each file written into the repository.</summary>
     public RepoCommit.GitSettings? Git { get; init; }
+
+    /// <summary>originals, or null: a folder (outside the workspace) where each file written is also kept as written, at
+    /// the same relative path, overwritten by each later write. For a workspace without git, so what the person changed
+    /// in a draft can still be seen (git would have the draft's commit).</summary>
+    public string? Originals { get; init; }
 
     /// <summary>[review], or null: nothing queued. An item for each file written into the repository.</summary>
     public ReviewQueue.ReviewSettings? Review { get; init; }
@@ -339,6 +344,8 @@ public sealed class Config
             !raw.TryGetValue(key, out var value) ? fallback
                 : value is TomlArray a && a.All(x => x is string) ? a.Cast<string>().ToList()
                 : throw new SettingsException($"{key} in {full} should be a list of globs");
+        string OutsideWorkspace(string path) => RelativeTo(PyPath.Resolve(path), workspace) is null ? path
+            : throw new SettingsException($"originals in {full} should be a folder outside the workspace ({workspace}), not {path}");
         return new Config
         {
             Path = full,
@@ -365,6 +372,7 @@ public sealed class Config
             AfterWrite = raw.TryGetValue("after_write", out var aw) && aw is TomlArray after ? after.Select(Str).ToList() : [],
             Git = git,
             Review = review,
+            Originals = Optional("originals") is { } originals ? OutsideWorkspace(PathSetting(originals, folder, env)) : null,
             FirstThingBefore = raw.TryGetValue("first_thing_before", out var ftb) ? Str(ftb) : "10:00",
             DayBeforeAt = raw.TryGetValue("day_before_at", out var dba) ? Str(dba) : "16:00",
             OnTheDayAt = raw.TryGetValue("on_the_day_at", out var otd) ? Str(otd) : "07:00",

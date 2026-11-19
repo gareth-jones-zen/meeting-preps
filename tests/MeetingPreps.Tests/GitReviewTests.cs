@@ -85,6 +85,33 @@ public sealed class GitReviewTests : IDisposable
     }
 
     [Fact]
+    public void A_folder_that_isnt_a_repository_keeps_each_draft_as_written_and_says_so_once()
+    {
+        var folder = Path.Combine(root, "plain");
+        var originals = Path.Combine(root, "originals");
+        var config = Write(Path.Combine(folder, "tools", "meeting-preps.toml"),
+            $"me = \"A\"\nemail = \"a@example.com\"\nworkspace = \"..\"\noriginals = \"{originals.Replace('\\', '/')}\"\n\n[git]\nrepo = \"..\"\npush = true\n");
+        Assert.Equal(originals, config.Originals!.Replace('/', '\\'));
+        var prep = Path.Combine(folder, "meetings", "preps", "2026-11-18-m-prep.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(prep)!);
+        File.WriteAllText(prep, "# [DRAFT] M\n\nas written\n");
+        Publish.After(config, "prep", "M", "2026-11-18T08:45", [prep], null, log.Add, () => Now);
+        var kept = Path.Combine(originals, "meetings", "preps", "2026-11-18-m-prep.md");
+        Assert.Equal("# [DRAFT] M\n\nas written\n", File.ReadAllText(kept));
+
+        File.WriteAllText(prep, "# [DRAFT] M\n\nas written\n\n> Update 12:00\n");   // an update: the original follows the tool
+        Publish.After(config, "update", "M", "2026-11-18T08:45", [prep], "x", log.Add, () => Now);
+        Assert.EndsWith("> Update 12:00\n", File.ReadAllText(kept));
+
+        File.WriteAllText(prep, "# M\n\nas the person edited it\n");                // the person's edit leaves the original alone
+        Assert.EndsWith("> Update 12:00\n", File.ReadAllText(kept));
+        Assert.Single(log, l => l.StartsWith("  git: not committing: ", StringComparison.Ordinal) && l.EndsWith(" isn't a git repository.", StringComparison.Ordinal));
+        Assert.DoesNotContain(log, l => l.Contains("commit failed", StringComparison.Ordinal));
+        Assert.Contains("  originals: kept meetings/preps/2026-11-18-m-prep.md as written", log);
+        Assert.False(Directory.Exists(Path.Combine(folder, ".git")));
+    }
+
+    [Fact]
     public void Commit_false_still_queues_and_a_push_goes_to_the_upstream()
     {
         var repo = new GitRepo(Path.Combine(root, "repo"));
@@ -201,6 +228,7 @@ public sealed class GitReviewTests : IDisposable
     [InlineData("[git]\nrepo = \"..\"\ntrailers = [\"not a trailer\"]\n", "trailers under [git] in ")]
     [InlineData("[review]\nsource = \"preps\"\n", "needs file")]
     [InlineData("[review]\nfile = \"q.json\"\nsource = \"preps\"\nact = true\n", "act under [review] in ")]
+    [InlineData("originals = \"../originals\"\n", "should be a folder outside the workspace")]
     public void Bad_settings_are_refused(string toml, string message)
     {
         var path = Path.Combine(root, "tools", "meeting-preps.toml");
