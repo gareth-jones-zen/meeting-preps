@@ -48,6 +48,11 @@ public sealed class Entry
     /// for the rest of its day after the block has started.</summary>
     public bool OwnBlock { get; init; }
 
+    /// <summary>A document written around your own leave rather than for a meeting: "return" on the first working day
+    /// back, "before" on the last working day before it, for leave of at least [leave] min_working_days. Null for any
+    /// other series.</summary>
+    public string? Leave { get; init; }
+
     /// <summary>Where this series' files go, overriding output (absolute; given relative to the workspace).</summary>
     public string? Folder { get; init; }
 }
@@ -68,7 +73,7 @@ public sealed class Config
         "tenant", "msal_cache", "model", "owner", "house_rules", "house_rules_file", "after_write", "git", "review",
         "first_thing_before", "day_before_at", "on_the_day_at", "refresh_within_minutes", "leave_pattern", "mail_skip_folders",
         "noise_senders", "noise_rules", "timezone", "time_zone", "scopes", "watch", "log_file", "state_file", "calendar_cache",
-        "calendar_cache_days", "hook_include", "hook_exclude", "hook_queue", "originals",
+        "calendar_cache_days", "hook_include", "hook_exclude", "hook_queue", "originals", "leave",
     ];
 
     public const string Template = """
@@ -145,6 +150,9 @@ public sealed class Config
     public string OnTheDayAt { get; init; } = "07:00";
     public long RefreshWithinMinutes { get; init; } = 60;
     public string LeavePattern { get; init; } = DefaultLeavePattern;
+
+    /// <summary>[leave]: the rules for the leave documents (a series with `leave`).</summary>
+    public LeaveSettings LeaveSettings { get; init; } = new();
     public List<string> MailSkipFolders { get; init; } = ["junk email", "drafts", "outbox"];
     public List<string> NoiseSenders { get; init; } = [];
     public string? NoiseRules { get; init; }
@@ -378,6 +386,7 @@ public sealed class Config
             OnTheDayAt = raw.TryGetValue("on_the_day_at", out var otd) ? Str(otd) : "07:00",
             RefreshWithinMinutes = raw.TryGetValue("refresh_within_minutes", out var rw) ? Int(rw) : 60,
             LeavePattern = leavePattern,
+            LeaveSettings = ReadLeave(raw, full),
             MailSkipFolders = raw.TryGetValue("mail_skip_folders", out var msf) && msf is TomlArray skip
                 ? skip.Select(f => Str(f).ToLowerInvariant()).ToList()
                 : ["junk email", "drafts", "outbox"],
@@ -393,6 +402,52 @@ public sealed class Config
             StateFile = stateFile,
             CalendarCache = Optional("calendar_cache") is { } calendarCache ? PathSetting(calendarCache, folder, env) : WithSuffix(stateFile, ".calendar.json"),
             CalendarCacheDays = raw.TryGetValue("calendar_cache_days", out var ccd) ? Float(ccd) : 3,
+        };
+    }
+
+    /// <summary>[leave]: min_working_days, subjects, categories, min_hours, half_day, bank_holiday_subjects,
+    /// bank_holiday_categories and window_days, each optional.</summary>
+    private static LeaveSettings ReadLeave(TomlTable raw, string full)
+    {
+        if (!raw.TryGetValue("leave", out var value))
+            return new LeaveSettings();
+        if (value is not TomlTable table)
+            throw new SettingsException($"leave in {full} should be a [leave] table.");
+        string[] known = ["min_working_days", "subjects", "categories", "min_hours", "half_day", "bank_holiday_subjects", "bank_holiday_categories", "window_days"];
+        foreach (var key in table.Keys)
+            if (!known.Contains(key))
+                throw new SettingsException($"[leave] in {full} has an unknown setting '{key}' (known: {string.Join(", ", known)}).");
+        double Number(string key, double fallback, double min, double max)
+        {
+            if (!table.TryGetValue(key, out var v))
+                return fallback;
+            var n = v switch { long l => l, double d => d, _ => double.NaN };
+            return n >= min && n <= max ? n : throw new SettingsException($"[leave] {key} in {full} should be a number from {min} to {max}.");
+        }
+        System.Text.RegularExpressions.Regex Pattern(string key, string fallback)
+        {
+            var text = table.TryGetValue(key, out var v) ? v as string ?? throw new SettingsException($"[leave] {key} in {full} should be text.") : fallback;
+            try
+            {
+                return LeaveSettings.Pattern(text);
+            }
+            catch (ArgumentException error)
+            {
+                throw new SettingsException($"[leave] {key} in {full} isn't a valid regular expression ({error.Message}).");
+            }
+        }
+        List<string> Names(string key, List<string> fallback) =>
+            !table.TryGetValue(key, out var v) ? fallback
+                : v is TomlArray a && a.All(x => x is string) ? a.Cast<string>().ToList()
+                : throw new SettingsException($"[leave] {key} in {full} should be a list of names.");
+        return new LeaveSettings
+        {
+            MinWorkingDays = Number("min_working_days", 5, 0.5, 366),
+            Rules = new CalendarDays.LeaveRules(Pattern("subjects", LeaveSettings.DefaultSubjects), Names("categories", []), Number("min_hours", 6, 0, 24)),
+            HalfDay = Pattern("half_day", LeaveSettings.DefaultHalfDay),
+            BankHolidaySubjects = Pattern("bank_holiday_subjects", LeaveSettings.DefaultBankHoliday),
+            BankHolidayCategories = Names("bank_holiday_categories", ["Bank holiday"]),
+            WindowDays = (int)Number("window_days", 42, 7, 366),
         };
     }
 
@@ -422,9 +477,17 @@ public sealed class Config
                 throw new SettingsException($"{where} has kind {repr}, which has no [kind.{kind ?? "None"}].");
             }
             var file = entry.TryGetValue("file", out var f) ? Str(f) : "";
-            if (!file.Contains("{date}", StringComparison.Ordinal) && !file.Contains("{week}", StringComparison.Ordinal)
-                && !file.Contains("{monday}", StringComparison.Ordinal))
+            var leave = entry.TryGetValue("leave", out var lv) ? Str(lv) : null;
+            if (leave is not null && label != "series")
+                throw new SettingsException($"{where}: leave is for a series (a document written around your leave), not a person.");
+            if (leave is not (null or "return" or "before"))
+                throw new SettingsException($"{where}: leave should be \"return\" (the first working day back) or \"before\" (the last working day before), not {Py.ReprString(leave)}.");
+            string[] dated = leave is null ? ["{date}", "{week}", "{monday}"] : ["{date}", "{week}", "{monday}", "{first_day}", "{last_day}", "{return_day}"];
+            if (!dated.Any(d => file.Contains(d, StringComparison.Ordinal)))
                 throw new SettingsException($"{where} needs a file name with {{date}} in it.");
+            if (leave is not null && (Truthy(entry, "weekly") || Truthy(entry, "own_block") || Truthy(entry, "absorbs") || Truthy(entry, "always_day_before_at")
+                                      || Truthy(entry, "due_previous_working_day_at")))
+                throw new SettingsException($"{where}: a leave series is written on a day worked out from your leave, so weekly, own_block, absorbs and the timings other than due_same_day_at don't apply.");
             foreach (var timing in new[] { "always_day_before_at", "due_previous_working_day_at", "due_same_day_at" })
                 if (entry.TryGetValue(timing, out var t) && !IsTime(Str(t)))
                     throw new SettingsException($"{where}: {timing} should be a time such as \"14:00\".");
@@ -450,6 +513,7 @@ public sealed class Config
                 Absorbs = entry.TryGetValue("absorbs", out var ab) && Truthy(entry, "absorbs") ? Str(ab) : null,
                 OwnBlock = ownBlock,
                 Folder = Truthy(entry, "folder") ? PathSetting(Str(entry["folder"]), workspace, env) : null,
+                Leave = leave,
             }));
         }
         return list;

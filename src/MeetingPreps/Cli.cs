@@ -22,6 +22,8 @@ public static class Cli
             meeting-preps run [--dry-run]            write whatever is due, then refresh preps for meetings in the next hour
             meeting-preps write DATE "<name>" [--out DIR]   one prep now: the meeting that day with a person, or a series
                                                      by subject (--out: written into DIR, after_write not run)
+                                                     --leave FIRST..LAST: treat those days as your leave, to
+                                                     try a leave document (plan and prompt take it too)
             meeting-preps update <transcript>...     add "Update HH:MM" blocks to upcoming preps these transcripts touch
             meeting-preps hook                       the same, for teams-transcripts' after_run (its JSON on stdin)
             meeting-preps context "<name>"           what a prep would see for this person: email, Teams, diary
@@ -121,6 +123,30 @@ public static class Cli
             if (outDir is not null)
                 outDir = PyPath.Resolve(outDir);
         }
+        List<DateOnly> pretend = [];   // plan, write, prompt --leave FIRST..LAST: treat those days as leave (trying the leave documents)
+        if (command is "plan" or "write" or "prompt")
+        {
+            for (var k = 0; k < rest.Count; k++)
+            {
+                string? given = null;
+                if (rest[k] == "--leave")
+                {
+                    if (k + 1 >= rest.Count)
+                        throw new UsageException("argument --leave: expected one argument");
+                    given = rest[k + 1];
+                    rest.RemoveRange(k, 2);
+                }
+                else if (rest[k].StartsWith("--leave=", StringComparison.Ordinal))
+                {
+                    given = rest[k]["--leave=".Length..];
+                    rest.RemoveAt(k);
+                }
+                else
+                    continue;
+                k--;
+                pretend.AddRange(PretendDays(given));
+            }
+        }
         var flags =rest.Where(r => r.StartsWith("--", StringComparison.Ordinal)).ToList();
         var positional = rest.Where(r => !r.StartsWith("--", StringComparison.Ordinal)).ToList();
         string[] allowed = command switch { "plan" => ["--json"], "run" => ["--dry-run"], _ => [] };
@@ -196,6 +222,7 @@ public static class Cli
             }
             var graph = host.Graph(config, null);
             var engine = new Engine(config, graph, log, host);
+            engine.PretendLeave = pretend;
             if (command == "plan")
             {
                 var start = positional.Count > 0 ? DateOnly.FromDateTime(PyTime.FromIso(positional[0])) : DateOnly.FromDateTime(host.Clock.Now());
@@ -254,6 +281,21 @@ public static class Cli
             return 1;
         }
         return 0;
+    }
+
+    /// <summary>--leave: one day (yyyy-mm-dd) or a range (first..last), each day in it.</summary>
+    internal static List<DateOnly> PretendDays(string given)
+    {
+        var parts = given.Split("..");
+        static DateOnly Day(string text) => DateOnly.TryParseExact(text.Trim(), "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None, out var d) ? d : throw new UsageException($"argument --leave: {Py.ReprString(text)} isn't a date (yyyy-mm-dd, or first..last)");
+        if (parts.Length > 2)
+            throw new UsageException($"argument --leave: {Py.ReprString(given)} should be a date or first..last");
+        var first = Day(parts[0]);
+        var last = parts.Length == 2 ? Day(parts[1]) : first;
+        if (last < first || last.DayNumber - first.DayNumber > 366)
+            throw new UsageException($"argument --leave: {Py.ReprString(given)} should run forwards, a year at most");
+        return Enumerable.Range(0, last.DayNumber - first.DayNumber + 1).Select(first.AddDays).ToList();
     }
 
     /// <summary>teams-transcripts' after_run report (results with "path"), doc-filer's ({"written": [...]}), or paths,

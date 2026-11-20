@@ -18,13 +18,13 @@ public static class Planner
     public static readonly string[] Days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
     /// <summary>The calendar for days from start, in the settings' time zone.</summary>
-    public static List<JsonObject> Events(IGraph graph, Config config, DateOnly start, int days)
+    public static List<JsonObject> Events(IGraph graph, Config config, DateOnly start, int days, string extraSelect = "")
     {
         var query = PyMore.UrlEncode([
             ("startDateTime", $"{PyTime.Iso(start)}T00:00:00"),
             ("endDateTime", $"{PyTime.Iso(start.AddDays(days))}T00:00:00"),
             ("$top", "200"), ("$orderby", "start/dateTime"),
-            ("$select", "subject,start,end,attendees,organizer,isCancelled,showAs,responseStatus,isAllDay,webLink"),
+            ("$select", "subject,start,end,attendees,organizer,isCancelled,showAs,responseStatus,isAllDay,webLink" + extraSelect),
         ]);
         var headers = new Dictionary<string, string> { ["Prefer"] = $"outlook.timezone=\"{config.TimeZone}\"" };
         return graph.Pages($"/me/calendarView?{query}", headers).Select(e => (JsonObject)e!).ToList();
@@ -60,7 +60,8 @@ public static class Planner
     /// its subfolders, which may hold other people's documents named the same way).</summary>
     public static string? LastPrep(Config config, string pattern, DateOnly before, string? folder = null)
     {
-        var glob = pattern.Replace("{date}", "*").Replace("{week}", "*").Replace("{monday}", "*").Replace("{slug}", "*");
+        var glob = pattern.Replace("{date}", "*").Replace("{week}", "*").Replace("{monday}", "*").Replace("{slug}", "*")
+            .Replace("{first_day}", "*").Replace("{last_day}", "*").Replace("{return_day}", "*");
         if (folder is not null)
         {
             if (!Directory.Exists(folder))
@@ -332,6 +333,48 @@ public static class Planner
         return plan;
     }
 
+    /// <summary>The leave documents due in [start, start + days): for each series with `leave`, each period whose day
+    /// (the first working day back, or the last before) falls in it. Written at due_same_day_at that day (default: the
+    /// first run for the return, 09:00 for before), and still worth writing for the rest of that day.</summary>
+    public static List<PlanRow> LeaveRows(Config config, IReadOnlyList<LeavePeriod> periods, DateOnly start, int days)
+    {
+        var rows = new List<PlanRow>();
+        foreach (var (subject, series) in config.SeriesInOrder)
+        {
+            if (series.Leave is not { } side)
+                continue;
+            foreach (var p in periods)
+            {
+                if (side == "return" ? p.OpenEnd : p.OpenStart)
+                    continue;
+                var day = side == "return" ? p.ReturnDay : p.BeforeDay;
+                if (day < start || day >= start.AddDays(days))
+                    continue;
+                var at = At(day, series.DueSameDayAt ?? (side == "return" ? "00:00" : "09:00"));
+                var row = new PlanRow(PyTime.Iso(at, "minutes"), PyTime.Strftime(at, "%H:%M"), subject)
+                {
+                    Decision = "prep", Kind = series.Kind, With = null, Series = subject, Due = PyTime.Iso(at, "minutes"),
+                    File = LeaveFile(series.File, day, p),
+                };
+                if (series.Folder is not null)
+                    row.Folder = series.Folder;
+                row.Exists = Exists(Path.Combine(series.Folder ?? config.Output, row.File!));
+                row.Previous = LastPrep(config, series.File, day, series.Folder);
+                row.Leave = p;
+                rows.Add(row);
+            }
+        }
+        return rows;
+    }
+
+    /// <summary>A leave document's file name: {date} (the day it's written for), {week}, {monday}, {first_day},
+    /// {last_day} and {return_day}.</summary>
+    public static string LeaveFile(string pattern, DateOnly day, LeavePeriod p) => PyMore.Format(pattern, new Dictionary<string, string>
+    {
+        ["date"] = PyTime.Iso(day), ["week"] = PyTime.Iso(WeekOf(day)), ["monday"] = PyTime.Iso(WeekStart(day)),
+        ["first_day"] = PyTime.Iso(p.First), ["last_day"] = PyTime.Iso(p.Last), ["return_day"] = PyTime.Iso(p.ReturnDay),
+    });
+
     public static string Show(List<PlanRow> plan, DateOnly start, int days)
     {
         static string When(string iso) => PyTime.Strftime(PyTime.FromIso(iso), "%a %d %b %H:%M");
@@ -341,6 +384,9 @@ public static class Planner
         foreach (var p in preps)
         {
             var extra = (p.Companion is { Length: > 0 } c ? " + " + BaseName(c) : "") + (p.Exists ? " [already written]" : "");
+            if (p.Leave is { } leave)
+                extra += $" [leave {PyTime.Strftime(leave.First, "%a %d %b")} to {PyTime.Strftime(leave.Last, "%a %d %b")}, "
+                         + $"{PyMore.FormatG(leave.Weekdays)} weekdays, back {PyTime.Strftime(leave.ReturnDay, "%a %d %b")}]";
             lines.Add($"  {When(p.Start)}  {p.Subject}  [{p.Kind}]\n      written {When(p.Due!)} -> {p.File}{extra}");
         }
         var unsure = plan.Where(p => p.Decision == "unsure").ToList();

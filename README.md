@@ -41,9 +41,9 @@ meeting-preps autostart on
 
 | Command | What it does |
 |---|---|
-| `plan [DATE] [DAYS] [--json]` | which meetings get a prep, and when (default: the next 5 days) |
+| `plan [DATE] [DAYS] [--json] [--leave FIRST..LAST]` | which meetings get a prep, and when (default: the next 5 days) |
 | `run [--dry-run]` | write whatever is due, then refresh preps for meetings in the next hour |
-| `write DATE "<name>" [--out DIR]` | one prep now: the meeting that day with a person, or a series by subject. `--out` writes it into DIR instead, and doesn't run `after_write`: for trying a change without committing or queuing anything |
+| `write DATE "<name>" [--out DIR]` | one prep now: the meeting that day with a person, or a series by subject. `--out` writes it into DIR instead, and doesn't run `after_write`: for trying a change without committing or queuing anything. `--leave FIRST..LAST` (also for `plan` and `prompt`) treats those days as your leave, to try a leave document: `write 2026-11-16 "Return pack" --leave 2026-11-09..2026-11-13 --out %TEMP%\try` |
 | `update <transcript>...` | add "Update HH:MM" blocks to upcoming preps these transcripts touch |
 | `hook` | the same, for a transcript tool's report on stdin (see Hooks) |
 | `context "<name>"` | what a prep would see for this person: email, Teams, diary |
@@ -158,11 +158,35 @@ file = "{week}.md"                      # filed under the coming Monday
 due_same_day_at = "14:00"               # or an hour before the block, if that's earlier
 # chat = "Team"                         # optional: the week's messages in this Teams chat are added too
 
+
+[leave]                                 # optional: your own leave, for the leave documents below (these are the defaults)
+min_working_days = 5                    # weekdays away (joined bank holidays counted, half days 0.5) before they're written
+subjects = '^\s*(holiday\b|annual leave|on leave|summer holidays?)'   # your own entries (no one else invited) that mean leave
+categories = []                         # or Outlook categories that do
+min_hours = 6                           # an entry shorter than this is a half day
+half_day = '\(half day\)'               # so is one whose subject matches
+bank_holiday_subjects = '^\s*bank holiday\b'
+bank_holiday_categories = ["Bank holiday"]
+window_days = 42                        # how far either side of the days planned the calendar is read for leave
+
+[kind.return]                           # a leave document: written around your leave, not for a meeting
+describe = "return pack, for the first morning back"
+rules_file = "kinds/return.md"
+document = true
+context_commands = [["inbox.exe", "due", "--days", "{days_away}"]]   # a leave document's commands get the period too
+
+[series."Return pack"]                  # the name is what `write` takes; it matches no calendar event
+kind = "return"
+leave = "return"                        # the first working day back ("before": the last working day before)
+folder = "reviews"
+file = "{return_day}-return.md"         # {first_day}, {last_day} and {return_day} as well as {date}
+# due_same_day_at = "07:00"             # default: the first run that day (before: 09:00)
+
 [aliases]
 "Sam J" = "Sam Jones"                   # other spellings calendar invites show
 ```
 
-Paths may use `~` and `%VARIABLES%`. File names take `{date}` (the meeting's), `{slug}`, `{week}` (a weekly document's Monday: the meeting's day if it's a Monday, otherwise the coming one) and `{monday}` (the Monday of the meeting's own week: that day if it's a Monday, otherwise the one before). A kind's rules can use `{name}` and `{slug}`, and also `{date}`, `{week}`, `{monday}` and `{file}` (where this one is written, relative to the workspace), such as `updates/whole-team/{monday}.md` for this week's page.
+Paths may use `~` and `%VARIABLES%`. File names take `{date}` (the meeting's), `{slug}`, `{week}` (a weekly document's Monday: the meeting's day if it's a Monday, otherwise the coming one) and `{monday}` (the Monday of the meeting's own week: that day if it's a Monday, otherwise the one before); a leave document's also take `{first_day}`, `{last_day}` and `{return_day}`. A kind's rules can use `{name}` and `{slug}`, and also `{date}`, `{week}`, `{monday}` and `{file}` (where this one is written, relative to the workspace), such as `updates/whole-team/{monday}.md` for this week's page. A leave document's rules (and its `context_commands`' arguments) can also use `{first_day}`, `{last_day}`, `{return_day}`, `{before_day}` (yyyy-mm-dd), `{weekdays}` away and `{days_away}` (calendar days from the day before to the day back); its commands get them as `MEETING_PREPS_FIRST_DAY` and so on too.
 
 **A kind's rules are where the judgement goes**: what to read, what to leave out, what shape the prep
 takes. Write them as you'd brief a colleague, with the reason; a rule with its reason is one Claude can
@@ -182,6 +206,7 @@ Each point came from a prep engine that ran daily for a month before this tool w
 - **The tool's own rules are general lessons:** timings that add up to no more than 80% of the meeting; dates as dates, never "today", because a prep may be read the day after it's written; quote only transcripts actually read; cite a note's whole line, caveat included. Your house rules win where they differ.
 - **A document kind is for writing, not meeting.** A weekly update written in your own Friday block isn't a prep: there's no one to meet, no previous prep with them, no pre-read. Its prompt is its rules, whole, then the week's diary (from the Monday of the block's week) and email from that Monday (one line each: subject, people, first line; the same mail as a prep sees), plus the series' Teams chat if it names one. Claude reads the workspace itself, as for a prep. House rules aren't added: they're for preps, so a document's rules carry everything it needs.
 - **`own_block` series:** an event of your own with nobody else invited gets nothing ("your own block") unless a series names its subject. Marked `own_block`, the series matches only such a block (yours, nobody else in it): the same subject with other people in it is classified like any other meeting, and a block shown as free is still written for. There's no `weekly` slot to put it back: no block (on leave, say) means no draft. **It stays worth writing for the rest of its day**: you may write in it later, and a run that wakes after the block started (after a usage limit, say) still writes it. Later transcripts that day still update it.
+- **Leave documents (1.7.0): a series with `leave` is written around your own leave, not for a meeting.** Three weeks away is the case it's for: the automations keep working, but nothing tells you on the first morning back what happened, and nothing reminds you on the last day what's set to happen while you're gone. `leave = "return"` is written on the first working day back (at the first run, unless `due_same_day_at` says later), `leave = "before"` on the last working day before (09:00 by default), each for leave of at least `[leave] min_working_days` weekdays. **What counts as leave is background-tools-lib's CalendarDays**, the day rules [out-of-office](https://github.com/gareth-jones-zen/out-of-office) uses, so the two agree on the days away and the day you're back: your own entries (no one else invited) matching `subjects` or `categories`, covering `min_hours` of the day or all of it (a shorter one, or one matching `half_day`, is half a day); weekends and bank holidays (`bank_holiday_subjects` or `_categories`) join the days either side, and a bank holiday counts as a day away. (The leave days on which no prep is written are still `leave_pattern`'s, as before.) The calendar is read `window_days` either side for this, with its categories, once an hour (the copy is kept in the state file). **A leave document goes first in a run**, ahead of other preps due, unless a meeting starts within the hour. Its prompt is its rules, the period, the diary with all-day entries and declined meetings (the return: the first week back; before: from that day to a week after the return, so leave cover and what's been declined show) and email headlines (the return: everything since the last working day before; before: the last 14 days); the return pack is told where the before-you-go pack is, and the other way round. `write`, `plan` and `prompt` take `--leave FIRST..LAST` to try one on days that weren't leave.
 - **Claude only reads**, with read-only tools in your workspace and no connectors; this tool writes the files. Every prep starts `# [DRAFT]` until you've read it.
 - **A Microsoft 365 outage doesn't stop it.** On 13 Nov 2026 Graph returned 502s all morning, and every prep failed, one notification each. Now each run keeps a copy of the calendar it read; when the calendar can't be read, it plans from that copy (no older than `calendar_cache_days`) for the days the copy covers. Email, Teams, the diary and `context_commands` each degrade on their own, and a source that has failed isn't asked again in the same run. **A prep written without something says so in a line under its title**, such as *"Microsoft 365 unavailable (HTTP 502 Bad Gateway): email and Teams not read. Written from the calendar as read Thu 12 Nov 17:03; meeting changes since may be missing."* The pre-meeting refresh waits for email and Teams to come back rather than checking half. **One notification per outage**, when the first degraded prep is written or a third run in a row meets it; the outage ends once everything that failed has been read again. A prep still fails, and is still notified, for its own reasons: Claude failing, or the file. With no calendar and no recent copy, the run can't plan, and the watcher's "couldn't run" says so after three runs.
 

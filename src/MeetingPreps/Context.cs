@@ -61,6 +61,54 @@ public static class Context
         return lines.Count > 0 ? string.Join("\n", lines) : "(nothing)";
     }
 
+    /// <summary>The diary for a leave document: as Diary, plus all-day entries (leave, bank holidays, other people's
+    /// leave copied in) and markers, with declined, tentative and free ones said so. Cancelled ones are still left out.</summary>
+    public static string FullDiary(Config config, IEnumerable<JsonObject> items)
+    {
+        var lines = new List<string>();
+        foreach (var e in items)
+        {
+            if (Py.Truthy(e["isCancelled"]))
+                continue;
+            var begins = PyTime.FromIso(PyStr.Head(Py.Str(e["start"]!["dateTime"]), 19));
+            var ends = PyTime.FromIso(PyStr.Head(Py.Str(e["end"]!["dateTime"]), 19));
+            var people = new List<string>();
+            foreach (var a in Py.Truthy(e["attendees"]) ? (JsonArray)e["attendees"]! : [])
+            {
+                var address = a?["emailAddress"] as JsonObject;
+                var name = TextOr(address?["name"], "");
+                if (Text(a?["type"]) == "resource" || Planner.IsRoom(name) || TextOr(address?["address"], "").ToLowerInvariant() == config.Email)
+                    continue;
+                people.Add(name);
+            }
+            var with = people.Count is > 0 and <= 4 ? $"  (with {string.Join(", ", people)})" : people.Count > 4 ? $"  ({people.Count} others)" : "";
+            var response = Text(e["responseStatus"]?["response"]);
+            var showAs = Text(e["showAs"]);
+            var marks = new List<string>();
+            if (response == "declined")
+                marks.Add("declined");
+            else if (response == "tentativelyAccepted")
+                marks.Add("tentative");
+            else if (response == "notResponded" && people.Count > 0)
+                marks.Add("not answered");
+            if (showAs is "free" or "oof" or "workingElsewhere")
+                marks.Add($"shown as {showAs}");
+            var mark = marks.Count > 0 ? $"  [{string.Join(", ", marks)}]" : "";
+            var subject = TextOr(e["subject"], "(no subject)");
+            string when;
+            if (Py.Truthy(e["isAllDay"]))
+            {
+                var last = ends.AddMinutes(-1);
+                when = begins.Date == last.Date ? $"{Strftime(begins, "%a %d %b")}, all day"
+                    : $"{Strftime(begins, "%a %d %b")} to {Strftime(last, "%a %d %b")}, all day";
+            }
+            else
+                when = $"{Strftime(begins, "%a %d %b %H:%M")}–{Strftime(ends, "%H:%M")}";
+            lines.Add($"- {when}  {subject}{with}{mark}");
+        }
+        return lines.Count > 0 ? string.Join("\n", lines) : "(nothing)";
+    }
+
     /// <summary>A mail-triage rule: its sender and match patterns, and what it does.</summary>
     internal sealed record TriageRule(string Sender, string Match, string? Action);
 

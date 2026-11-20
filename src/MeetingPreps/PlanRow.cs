@@ -45,6 +45,13 @@ public sealed class PlanRow
     /// <summary>The series' own folder, when it has one (set only then, so other rows keep their keys).</summary>
     public string? Folder { get => Text("folder"); set => Set("folder", value); }
 
+    /// <summary>A leave document's period (set only on those rows).</summary>
+    public LeavePeriod? Leave
+    {
+        get => data["leave"] is JsonObject o ? LeavePeriod.FromJson(o) : null;
+        set => Set("leave", value?.Json());
+    }
+
     public (string Subject, string Start, string End)? Absorbed
     {
         get => data["absorbed"] is JsonObject a ? ((string)a["subject"]!, (string)a["start"]!, (string)a["end"]!) : null;
