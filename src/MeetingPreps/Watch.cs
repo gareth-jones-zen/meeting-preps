@@ -16,13 +16,8 @@ public static class Watch
 {
     public const int AlreadyRunning = 3;
 
-    public static bool Due(Config config, DateTime now)
-    {
-        if (config.WatchWeekdays && PyTime.Weekday(now) >= 5)
-            return false;
-        var hhmm = PyTime.Strftime(now, "%H:%M");
-        return string.CompareOrdinal(config.WatchHours.Start, hhmm) <= 0 && string.CompareOrdinal(hhmm, config.WatchHours.End) < 0;
-    }
+    /// <summary>Whether a run is due now: inside [schedule]'s hours and days (the shared IsActive).</summary>
+    public static bool Due(Config config, DateTime now) => config.Schedule.IsActive(now);
 
     public static string LockName(Config config, PrepsHost host) => $"{host.LockPrefix}meeting-preps-watch-{Locks.Key(config.Path)}";
 
@@ -36,8 +31,9 @@ public static class Watch
             log("another watcher is already running for these settings; not starting a second");
             return AlreadyRunning;
         }
-        log($"watching: a run every {config.WatchEveryMinutes} min, {config.WatchHours.Start}-{config.WatchHours.End}"
-            + (config.WatchWeekdays ? " Mon-Fri" : ""));
+        log($"watching: {config.ScheduleText()}");
+        if (config.ScheduleFromOldKeys)
+            log("settings: [watch] every_minutes, hours and weekdays are the old form; move them to [schedule] (README, Settings)");
         double Seconds() => host.Clock.UtcNow().ToUnixTimeMilliseconds() / 1000.0;
         var nextRun = 0.0;
         var beat = Seconds();

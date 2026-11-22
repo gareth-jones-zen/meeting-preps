@@ -72,7 +72,7 @@ public sealed class Config
         "me", "email", "workspace", "output", "history", "kind", "person", "series", "aliases", "org_domain", "login_hint",
         "tenant", "msal_cache", "model", "owner", "house_rules", "house_rules_file", "after_write", "git", "review",
         "first_thing_before", "day_before_at", "on_the_day_at", "refresh_within_minutes", "leave_pattern", "mail_skip_folders",
-        "noise_senders", "noise_rules", "timezone", "time_zone", "scopes", "watch", "log_file", "state_file", "calendar_cache",
+        "noise_senders", "noise_rules", "timezone", "time_zone", "scopes", "watch", "schedule", "log_file", "state_file", "calendar_cache",
         "calendar_cache_days", "hook_include", "hook_exclude", "hook_queue", "originals", "leave", "plan_days",
     ];
 
@@ -161,9 +161,76 @@ public sealed class Config
     public string? NoiseRules { get; init; }
     public string TimeZone { get; init; } = "GMT Standard Time";
     public List<string> Scopes { get; init; } = ["Calendars.Read", "Mail.Read", "Chat.Read"];
-    public long WatchEveryMinutes { get; init; } = 5;
-    public (string Start, string End) WatchHours { get; init; } = ("07:00", "18:00");
-    public bool WatchWeekdays { get; init; } = true;
+    /// <summary>When the watcher runs: [schedule] (background-tools-lib's shared scheduling settings, 1.9.0), a
+    /// watcher's every_minutes being how often it runs. Until 1.9.0 these were [watch] every_minutes, hours and
+    /// weekdays, still read (the old form; the watcher logs it once at start).</summary>
+    public WinBackground.ScheduleSettings Schedule { get; init; } = DefaultSchedule;
+
+    /// <summary>True when the schedule came from the old [watch] table.</summary>
+    public bool ScheduleFromOldKeys { get; init; }
+
+    public static readonly WinBackground.ScheduleSettings DefaultSchedule = new()
+    {
+        EveryMinutes = 5,
+        Hours = (new TimeSpan(7, 0, 0), new TimeSpan(18, 0, 0)),
+        Days = new HashSet<DayOfWeek> { DayOfWeek.Monday, DayOfWeek.Tuesday, DayOfWeek.Wednesday, DayOfWeek.Thursday, DayOfWeek.Friday },
+    };
+
+    public long WatchEveryMinutes => Schedule.EveryMinutes ?? 5;
+    public (string Start, string End) WatchHours => Schedule.Hours is var (from, to) ? (Clock(from), Clock(to)) : ("00:00", "24:00");
+    public bool WatchWeekdays => Schedule.Days is { Count: 5 } d && !d.Contains(DayOfWeek.Saturday) && !d.Contains(DayOfWeek.Sunday);
+
+    /// <summary>"a run every 5 min, 07:00-18:00 Mon-Fri", for the log and messages.</summary>
+    public string ScheduleText()
+    {
+        var days = Schedule.Days is null || Schedule.Days.Count == 7 ? ""
+            : WatchWeekdays ? " Mon-Fri"
+            : " " + string.Join(",", Schedule.Days.OrderBy(d => ((int)d + 6) % 7).Select(d => d.ToString()[..3]));
+        return $"a run every {WatchEveryMinutes} min, {WatchHours.Start}-{WatchHours.End}{days}";
+    }
+
+    private static string Clock(TimeSpan t) => t.TotalHours >= 24 ? "24:00" : $"{(int)t.TotalHours:00}:{t.Minutes:00}";
+
+    private static readonly string[] OldScheduleKeys = ["every_minutes", "hours", "weekdays"];
+
+    /// <summary>The watcher's schedule: [schedule] (1.9.0), or the old [watch] every_minutes, hours and weekdays (still
+    /// read, so a settings file from before keeps working). Both at once is refused.</summary>
+    private static (WinBackground.ScheduleSettings Schedule, bool OldKeys) ReadSchedule(TomlTable raw, string full)
+    {
+        var watch = raw.TryGetValue("watch", out var w) && w is TomlTable watchTable ? watchTable : [];
+        var old = OldScheduleKeys.Where(watch.ContainsKey).ToList();
+        if (raw.TryGetValue("schedule", out var table))
+        {
+            if (old.Count > 0)
+                throw new SettingsException($"{full} sets {string.Join(", ", old)} in [watch] and has a [schedule]: keep them in "
+                                            + "[schedule] only ([watch] is the old form).");
+            if (table is not TomlTable schedule)
+                throw new SettingsException($"schedule in {full} should be a [schedule] table.");
+            WinBackground.ScheduleSettings parsed;
+            try
+            {
+                parsed = WinBackground.ScheduleSettings.Parse(schedule, DefaultSchedule, WinBackground.TaskKind.Watcher, $"[schedule] in {full}");
+            }
+            catch (FormatException error)
+            {
+                throw new SettingsException(error.Message);
+            }
+            if (parsed.EveryMinutes is not > 0)
+                throw new SettingsException($"[schedule] in {full}: every_minutes (how often the watcher runs) should be at least 1.");
+            return (parsed, false);
+        }
+        if (old.Count == 0)
+            return (DefaultSchedule, false);
+        var hours = watch.TryGetValue("hours", out var h) ? Str(h) : "07:00-18:00";
+        if (!Regex.IsMatch(hours, @"\A\d\d:\d\d-\d\d:\d\d\z", RegexOptions.CultureInvariant))
+            throw new SettingsException($"[watch] hours in {full} should look like \"07:00-18:00\".");
+        return (DefaultSchedule with
+        {
+            EveryMinutes = watch.TryGetValue("every_minutes", out var every) ? (int)Int(every) : 5,
+            Hours = WinBackground.ScheduleSettings.ParseHours(hours, $"[watch] in {full}"),
+            Days = !watch.ContainsKey("weekdays") || Truthy(watch, "weekdays") ? DefaultSchedule.Days : null,
+        }, true);
+    }
     public required string LogFile { get; init; }
     public required string StateFile { get; init; }
 
@@ -318,10 +385,7 @@ public sealed class Config
 
         var people = Entries(raw, "person", "person", kinds, full, workspace, env);
         var series = Entries(raw, "series", "series", kinds, full, workspace, env);
-        var watch = raw.TryGetValue("watch", out var w) && w is TomlTable watchTable ? watchTable : [];
-        var hours = watch.TryGetValue("hours", out var h) ? Str(h) : "07:00-18:00";
-        if (!Regex.IsMatch(hours, @"\A\d\d:\d\d-\d\d:\d\d\z", RegexOptions.CultureInvariant))
-            throw new SettingsException($"[watch] hours in {full} should look like \"07:00-18:00\".");
+        var (schedule, oldKeys) = ReadSchedule(raw, full);
         var leavePattern = raw.TryGetValue("leave_pattern", out var lp) ? Str(lp) : DefaultLeavePattern;
         if (PyRegex.Problem(leavePattern) is { } problem)
             throw new SettingsException($"leave_pattern in {full} isn't a valid regular expression ({problem}).");
@@ -399,9 +463,8 @@ public sealed class Config
             // timezone, or the shared time_zone (a base file's name for it); timezone wins.
             TimeZone = raw.TryGetValue("timezone", out var tz) || raw.TryGetValue("time_zone", out tz) ? Str(tz) : "GMT Standard Time",
             Scopes = raw.TryGetValue("scopes", out var sc) && sc is TomlArray scopes ? scopes.Select(Str).ToList() : ["Calendars.Read", "Mail.Read", "Chat.Read"],
-            WatchEveryMinutes = watch.TryGetValue("every_minutes", out var every) ? Int(every) : 5,
-            WatchHours = (hours.Split('-')[0], hours.Split('-')[1]),
-            WatchWeekdays = !watch.ContainsKey("weekdays") || Truthy(watch, "weekdays"),
+            Schedule = schedule,
+            ScheduleFromOldKeys = oldKeys,
             LogFile = Optional("log_file") is { } log ? PathSetting(log, folder, env) : PyPath.Pure(System.IO.Path.Combine(local, "meeting-preps.log")),
             StateFile = stateFile,
             CalendarCache = Optional("calendar_cache") is { } calendarCache ? PathSetting(calendarCache, folder, env) : WithSuffix(stateFile, ".calendar.json"),

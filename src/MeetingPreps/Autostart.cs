@@ -1,3 +1,5 @@
+using WinBackground;
+
 namespace MeetingPreps;
 
 /// <summary>The watcher at logon, through Windows Task Scheduler (WinBackground). It runs meeting-preps-background.exe
@@ -14,7 +16,8 @@ public static class Autostart
         void Print(string text) => host.Out.Write(text.Replace("\n", Environment.NewLine) + Environment.NewLine);
         if (action == "on")
         {
-            var line = host.Task.Enable(host.BackgroundExe, ["--config", config.Path, "watch"], Path.GetDirectoryName(config.Path));
+            var line = host.Task.Enable(host.BackgroundExe, ["--config", config.Path, "watch"], Path.GetDirectoryName(config.Path),
+                config.Schedule.ToTaskSchedule(TaskKind.Watcher));
             Print($"Autostart is on: '{TaskName}' runs at every logon, and has started now.\n  {line}");
         }
         else if (action == "off")
@@ -43,6 +46,8 @@ public static class Autostart
                 Print($"Autostart is on ('{TaskName}').");
                 foreach (var name in new[] { "state", "last_run", "last_result", "command" })
                     Print($"  {name.Replace('_', ' '),-12} {info.GetValueOrDefault(name, "")}");
+                if (ScheduleDrift.Advice(ScheduleDrift.Check(info, config.Schedule.Fingerprint(TaskKind.Watcher)), "meeting-preps") is { } advice)
+                    Print("  " + advice);
             }
         }
         host.Out.Flush();

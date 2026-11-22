@@ -129,7 +129,13 @@ public class MoreTests
             return "cmd";
         }
 
-        public string Enable(string exe, IReadOnlyList<string> args, string? workingDir, TaskSchedule schedule) => throw new NotSupportedException();
+        public string? Fingerprint { get; set; }
+
+        public string Enable(string exe, IReadOnlyList<string> args, string? workingDir, TaskSchedule schedule)
+        {
+            Fingerprint = schedule.Fingerprint;
+            return Enable(exe, args, workingDir);
+        }
 
         public bool Disable()
         {
@@ -140,7 +146,23 @@ public class MoreTests
 
         public bool Stop() => on;
         public bool Start() => on;
-        public IReadOnlyDictionary<string, string>? Status() => on ? new Dictionary<string, string> { ["state"] = "Running", ["command"] = "c" } : null;
+        public IReadOnlyDictionary<string, string>? Status() => on
+            ? new Dictionary<string, string> { ["state"] = "Running", ["command"] = "c", ["description"] = ScheduleDrift.WithFingerprint("d", Fingerprint ?? "") }
+            : null;
+    }
+
+    [Fact]
+    public void Autostart_status_says_when_the_task_no_longer_matches_the_schedule()
+    {
+        using var f = new Fixture();
+        var task = new FakeTask();
+        var output = new StringWriter();
+        var host = new PrepsHost { Task = task, Out = output, BackgroundExe = @"C:\p\meeting-preps-background.exe" };
+        Autostart.Command("on", f.Config, host);
+        Assert.Equal("v1 watcher logon=yes", task.Fingerprint);
+        task.Fingerprint = "v1 job every=15 daily=- logon=yes unlock=0";
+        Autostart.Command("status", f.Config, host);
+        Assert.Contains("settings changed since this task was registered: run `meeting-preps autostart on`", output.ToString());
     }
 
     [Fact]

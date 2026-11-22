@@ -102,10 +102,10 @@ originals = "%LOCALAPPDATA%/my-tools/originals"   # optional, for a workspace wi
 state_file = "state.json"               # optional: the refresh and outage record (default: in %LOCALAPPDATA%\meeting-preps)
 log_file = "meeting-preps.log"          # optional (default: in %LOCALAPPDATA%\meeting-preps)
 
-[watch]
+[schedule]                              # when the watcher runs (the shared [schedule] settings, below)
 every_minutes = 5
 hours = "07:00-18:00"
-weekdays = true
+days = "Mon-Fri"
 
 [git]                                   # optional: commit each file written (see Committing and review)
 repo = "."                              # the git repository's top, which the preps are in (relative to this file)
@@ -192,6 +192,18 @@ Paths may use `~` and `%VARIABLES%`. File names take `{date}` (the meeting's), `
 **A kind's rules are where the judgement goes**: what to read, what to leave out, what shape the prep
 takes. Write them as you'd brief a colleague, with the reason; a rule with its reason is one Claude can
 apply sensibly to a case you didn't foresee.
+
+### `[schedule]`: when the watcher runs (1.9.0)
+
+The shared scheduling settings from background-tools-lib (its README, "[schedule]: the shared scheduling settings"), the
+same keys in every tool. meeting-preps is a watcher: it starts at logon and keeps running, so `every_minutes` is how often
+it runs, and `hours` and `days` when; `daily_at` and `after_unlock_minutes` don't apply. **Defaults:** every 5 minutes,
+07:00-18:00, Mon-Fri. The watcher re-reads its settings at each run it makes, so a change takes effect from the next run
+(the interval to the one after it); no re-registering is needed. `autostart status` says if the registered task no
+longer matches the settings.
+
+**Until 1.9.0** these were `[watch]` `every_minutes`, `hours` and `weekdays` (`weekdays = false` is `days = "Mon-Sun"`).
+They're still read, and the watcher logs once at start that they're the old form; a file with both is refused.
 
 ## How it works, and why
 
