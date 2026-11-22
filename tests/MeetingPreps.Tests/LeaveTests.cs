@@ -115,6 +115,24 @@ public class LeaveTests
     }
 
     [Fact]
+    public void A_base_files_leave_supplies_the_shared_keys_and_this_tools_own_stay_here()
+    {
+        using var g = new Fixture();
+        File.WriteAllText(Path.Combine(g.Dir, "base.toml"),
+            "[leave]\nsubjects = '^\\s*vacation\\b'\nmin_hours = 4\nhalf_day = '\\(half\\)'\nbank_holiday_categories = [\"BH\"]\n");
+        var path = Path.Combine(g.Dir, "with-base.toml");
+        File.WriteAllText(path, "base = \"base.toml\"\nme = \"a\"\nemail = \"a@b\"\n[kind.k]\ndescribe = \"d\"\n[leave]\nmin_working_days = 3\n");
+        var leave = Config.Load(path).LeaveSettings;
+        Assert.Equal(3, leave.MinWorkingDays);
+        Assert.Matches(leave.Rules.Subjects, "Vacation in Spain");
+        Assert.DoesNotMatch(leave.Rules.Subjects, "Holiday (Example Role)");
+        Assert.Equal(4, leave.Rules.MinHours);
+        Assert.Matches(leave.HalfDay, "Vacation (half)");
+        Assert.Equal(["BH"], leave.BankHolidayCategories);
+        Assert.Matches(leave.BankHolidaySubjects, "Bank holiday");   // not in the base: the shared default
+    }
+
+    [Fact]
     public void Christmas_is_one_period_with_the_bank_holidays_joined()
     {
         using var f = Make(new DateTime(2026, 12, 1, 9, 0, 0));

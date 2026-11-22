@@ -472,18 +472,24 @@ public sealed class Config
         };
     }
 
-    /// <summary>[leave]: min_working_days, subjects, categories, min_hours, half_day, bank_holiday_subjects,
-    /// bank_holiday_categories and window_days, each optional.</summary>
+    /// <summary>[leave]: background-tools-lib's shared leave settings (subjects, categories, min_hours, half_day,
+    /// bank_holiday_subjects, bank_holiday_categories; a base file's [leave] can supply them), plus this tool's own
+    /// min_working_days and window_days, each optional.</summary>
     private static LeaveSettings ReadLeave(TomlTable raw, string full)
     {
         if (!raw.TryGetValue("leave", out var value))
             return new LeaveSettings();
         if (value is not TomlTable table)
             throw new SettingsException($"leave in {full} should be a [leave] table.");
-        string[] known = ["min_working_days", "subjects", "categories", "min_hours", "half_day", "bank_holiday_subjects", "bank_holiday_categories", "window_days"];
-        foreach (var key in table.Keys)
-            if (!known.Contains(key))
-                throw new SettingsException($"[leave] in {full} has an unknown setting '{key}' (known: {string.Join(", ", known)}).");
+        CalendarDays.LeaveSettings shared;
+        try
+        {
+            shared = CalendarDays.LeaveSettings.Parse(table, full, ["min_working_days", "window_days"]);
+        }
+        catch (FormatException error)
+        {
+            throw new SettingsException(error.Message);
+        }
         double Number(string key, double fallback, double min, double max)
         {
             if (!table.TryGetValue(key, out var v))
@@ -491,29 +497,13 @@ public sealed class Config
             var n = v switch { long l => l, double d => d, _ => double.NaN };
             return n >= min && n <= max ? n : throw new SettingsException($"[leave] {key} in {full} should be a number from {min} to {max}.");
         }
-        System.Text.RegularExpressions.Regex Pattern(string key, string fallback)
-        {
-            var text = table.TryGetValue(key, out var v) ? v as string ?? throw new SettingsException($"[leave] {key} in {full} should be text.") : fallback;
-            try
-            {
-                return LeaveSettings.Pattern(text);
-            }
-            catch (ArgumentException error)
-            {
-                throw new SettingsException($"[leave] {key} in {full} isn't a valid regular expression ({error.Message}).");
-            }
-        }
-        List<string> Names(string key, List<string> fallback) =>
-            !table.TryGetValue(key, out var v) ? fallback
-                : v is TomlArray a && a.All(x => x is string) ? a.Cast<string>().ToList()
-                : throw new SettingsException($"[leave] {key} in {full} should be a list of names.");
         return new LeaveSettings
         {
             MinWorkingDays = Number("min_working_days", 5, 0.5, 366),
-            Rules = new CalendarDays.LeaveRules(Pattern("subjects", LeaveSettings.DefaultSubjects), Names("categories", []), Number("min_hours", 6, 0, 24)),
-            HalfDay = Pattern("half_day", LeaveSettings.DefaultHalfDay),
-            BankHolidaySubjects = Pattern("bank_holiday_subjects", LeaveSettings.DefaultBankHoliday),
-            BankHolidayCategories = Names("bank_holiday_categories", ["Bank holiday"]),
+            Rules = shared.Rules,
+            HalfDay = shared.HalfDay,
+            BankHolidaySubjects = shared.BankHolidaySubjects,
+            BankHolidayCategories = shared.BankHolidayCategories,
             WindowDays = (int)Number("window_days", 42, 7, 366),
         };
     }

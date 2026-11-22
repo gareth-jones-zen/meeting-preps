@@ -193,6 +193,14 @@ Paths may use `~` and `%VARIABLES%`. File names take `{date}` (the meeting's), `
 takes. Write them as you'd brief a colleague, with the reason; a rule with its reason is one Claude can
 apply sensibly to a case you didn't foresee.
 
+### `[leave]`: what counts as your leave (1.10.0)
+
+`subjects`, `categories`, `min_hours`, `half_day`, `bank_holiday_subjects` and `bank_holiday_categories` are
+background-tools-lib's shared leave settings: see its README, "`[leave]`: the shared leave settings". With `base`, a base
+file's `[leave]` can hold them once for every tool that reads leave (meeting-preps, calendar-out-of-office,
+calendar-work-location), so they agree on the days away and the day back; keep a `[leave]` here (even empty) for this
+tool's own `min_working_days` and `window_days`, which the base fills in around.
+
 ### `[schedule]`: when the watcher runs (1.9.0)
 
 The shared scheduling settings from background-tools-lib (its README, "[schedule]: the shared scheduling settings"), the
