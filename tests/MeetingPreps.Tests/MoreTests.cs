@@ -212,6 +212,35 @@ public class MoreTests
     }
 
     [Fact]
+    public void Plan_shows_five_days_unless_plan_days_or_a_number_says_otherwise()
+    {
+        using var f = new Fixture(now: new DateTime(2026, 11, 11, 8, 0, 0));
+        var config = Path.Combine(f.Dir, "config.toml");
+        var calendar = new Calendar(Fixture.Event("Sam 1:1", "2026-11-11T11:00", "2026-11-11T11:30", "Sam Jones"));
+        IGraph Graph(Config c, bool? i) => calendar;
+        Assert.Equal(5, Config.Load(config).PlanDays);
+        Assert.Contains("for 5 days", Cli(["--config", config, "plan", "2026-11-11"], Graph, f).Out);
+
+        File.WriteAllText(config, "plan_days = 3\n" + File.ReadAllText(config));
+        Assert.Equal(3, Config.Load(config).PlanDays);
+        Assert.Contains("for 3 days", Cli(["--config", config, "plan", "2026-11-11"], Graph, f).Out);
+        Assert.Contains("for 2 days", Cli(["--config", config, "plan", "2026-11-11", "2"], Graph, f).Out);   // a number given still wins
+    }
+
+    [Fact]
+    public void Plan_days_must_be_a_sensible_whole_number()
+    {
+        using var f = new Fixture(now: new DateTime(2026, 11, 11, 8, 0, 0));
+        var config = Path.Combine(f.Dir, "config.toml");
+        var original = File.ReadAllText(config);
+        foreach (var bad in new[] { "0", "367", "\"five\"", "2.5" })
+        {
+            File.WriteAllText(config, $"plan_days = {bad}\n" + original);
+            Assert.Contains("plan_days", Assert.Throws<SettingsException>(() => Config.Load(config)).Message);
+        }
+    }
+
+    [Fact]
     public void Plan_write_prompt_and_hook_from_the_command_line()
     {
         using var f = new Fixture(now: new DateTime(2026, 11, 11, 8, 0, 0));

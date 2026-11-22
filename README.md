@@ -41,7 +41,7 @@ meeting-preps autostart on
 
 | Command | What it does |
 |---|---|
-| `plan [DATE] [DAYS] [--json] [--leave FIRST..LAST]` | which meetings get a prep, and when (default: the next 5 days) |
+| `plan [DATE] [DAYS] [--json] [--leave FIRST..LAST]` | which meetings get a prep, and when (default: `plan_days`, 5 days) |
 | `run [--dry-run]` | write whatever is due, then refresh preps for meetings in the next hour |
 | `write DATE "<name>" [--out DIR]` | one prep now: the meeting that day with a person, or a series by subject. `--out` writes it into DIR instead, and doesn't run `after_write`: for trying a change without committing or queuing anything. `--leave FIRST..LAST` (also for `plan` and `prompt`) treats those days as your leave, to try a leave document: `write 2026-11-16 "Return pack" --leave 2026-11-09..2026-11-13 --out %TEMP%\try` |
 | `update <transcript>...` | add "Update HH:MM" blocks to upcoming preps these transcripts touch |
@@ -89,6 +89,7 @@ first_thing_before = "10:00"            # meetings before this are prepped the p
 day_before_at = "16:00"                 # ...at this time
 on_the_day_at = "07:00"                 # everything else, on the day
 refresh_within_minutes = 60             # the pre-meeting refresh, for 1:1s
+plan_days = 5                           # how many days `plan` shows (only the view: what gets a prep is the timings above)
 leave_pattern = '^(\w+ )?(holidays?|annual leave|leave|bank holiday)\b'   # your own diary entries that mean leave
 mail_skip_folders = ["junk email", "drafts", "outbox"]   # folder names (starting with) that are noise
 noise_senders = ['receipts@shop\.example']   # optional: more sender patterns that are noise

@@ -73,7 +73,7 @@ public sealed class Config
         "tenant", "msal_cache", "model", "owner", "house_rules", "house_rules_file", "after_write", "git", "review",
         "first_thing_before", "day_before_at", "on_the_day_at", "refresh_within_minutes", "leave_pattern", "mail_skip_folders",
         "noise_senders", "noise_rules", "timezone", "time_zone", "scopes", "watch", "log_file", "state_file", "calendar_cache",
-        "calendar_cache_days", "hook_include", "hook_exclude", "hook_queue", "originals", "leave",
+        "calendar_cache_days", "hook_include", "hook_exclude", "hook_queue", "originals", "leave", "plan_days",
     ];
 
     public const string Template = """
@@ -149,6 +149,9 @@ public sealed class Config
     public string DayBeforeAt { get; init; } = "16:00";
     public string OnTheDayAt { get; init; } = "07:00";
     public long RefreshWithinMinutes { get; init; } = 60;
+    /// <summary>How many days `plan` shows when it isn't given a number (plan_days; 5). Only the view: what gets a prep is
+    /// decided by the timings above, to the end of the next working day.</summary>
+    public int PlanDays { get; init; } = 5;
     public string LeavePattern { get; init; } = DefaultLeavePattern;
 
     /// <summary>[leave]: the rules for the leave documents (a series with `leave`).</summary>
@@ -385,6 +388,7 @@ public sealed class Config
             DayBeforeAt = raw.TryGetValue("day_before_at", out var dba) ? Str(dba) : "16:00",
             OnTheDayAt = raw.TryGetValue("on_the_day_at", out var otd) ? Str(otd) : "07:00",
             RefreshWithinMinutes = raw.TryGetValue("refresh_within_minutes", out var rw) ? Int(rw) : 60,
+            PlanDays = raw.TryGetValue("plan_days", out var pd) ? PlanDaysSetting(pd, full) : 5,
             LeavePattern = leavePattern,
             LeaveSettings = ReadLeave(raw, full),
             MailSkipFolders = raw.TryGetValue("mail_skip_folders", out var msf) && msf is TomlArray skip
@@ -601,6 +605,11 @@ public sealed class Config
         string s => PyStr.Int(s),
         _ => throw new SettingsException($"{value} isn't a whole number."),
     };
+
+    /// <summary>plan_days: a whole number of days, 1 to 366.</summary>
+    private static int PlanDaysSetting(object? value, string file) =>
+        value is long n and >= 1 and <= 366 ? (int)n
+            : throw new SettingsException($"plan_days in {file} should be a whole number of days from 1 to 366, not {value}.");
 }
 
 [Tomlyn.Serialization.TomlSerializable(typeof(TomlTable))]

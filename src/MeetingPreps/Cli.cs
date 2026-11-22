@@ -18,7 +18,7 @@ public static class Cli
 
             meeting-preps config                     create the settings file (if missing) and say where it is
             meeting-preps sign-in                    sign in to Microsoft (once; opens a browser)
-            meeting-preps plan [DATE] [DAYS]         which meetings get a prep, and when (default: the next 5 days)
+            meeting-preps plan [DATE] [DAYS]         which meetings get a prep, and when (default: plan_days, 5)
             meeting-preps run [--dry-run]            write whatever is due, then refresh preps for meetings in the next hour
             meeting-preps write DATE "<name>" [--out DIR]   one prep now: the meeting that day with a person, or a series
                                                      by subject (--out: written into DIR, after_write not run)
@@ -173,9 +173,9 @@ public static class Cli
                     throw new UsageException($"argument action: invalid choice: {Py.ReprString(positional[0])} (choose from on, off, restart, status)");
                 break;
         }
-        var planDays = 5;
-        if (command == "plan" && positional.Count == 2 && !int.TryParse(positional[1], out planDays))
-            throw new UsageException($"argument days: invalid int value: {Py.ReprString(positional[1])}");
+        int? givenDays = null;
+        if (command == "plan" && positional.Count == 2)
+            givenDays = int.TryParse(positional[1], out var parsedDays) ? parsedDays : throw new UsageException($"argument days: invalid int value: {Py.ReprString(positional[1])}");
 
         if (command == "config")
         {
@@ -226,6 +226,7 @@ public static class Cli
             if (command == "plan")
             {
                 var start = positional.Count > 0 ? DateOnly.FromDateTime(PyTime.FromIso(positional[0])) : DateOnly.FromDateTime(host.Clock.Now());
+                var planDays = givenDays ?? config.PlanDays;
                 var plan = engine.PlanRows(start, planDays);
                 Print(host.Out, flags.Contains("--json") ? Planner.Json(plan) : Planner.Show(plan, start, planDays));
                 if (engine.CalendarFrom is { } from && !flags.Contains("--json"))
