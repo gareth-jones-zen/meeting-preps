@@ -79,6 +79,7 @@ me = "Alex Smith"                       # your name as calendar invites show it
 email = "alex.smith@example.com"        # your address, for telling your mail from others'
 org_domain = "example.com"              # optional: external mail counts only with someone from here on it
 # login_hint, tenant, msal_cache        # optional: who signs in, the tenant, and where the sign-in is kept
+# journal_file = "..."                  # optional: the shared activity journal (1.12.0; usually from the base file)
 workspace = "~/Documents/Notes"         # the folder Claude reads (read-only): notes, summaries, transcripts
 output = "preps"                        # where preps are written (relative to workspace, or absolute)
 history = "preps"                       # where earlier preps are found, searched recursively (default: output)
@@ -347,6 +348,34 @@ the file while they read and write it, so neither loses the other's change; `mar
 
 **Until 1.11.0, `plan --json`** printed the planner's rows as the Python version did (a list, local times without an
 offset), for comparing the two; nothing else read it.
+
+## The shared activity journal (1.12.0)
+
+With **`journal_file`** set (top level, or in the base file so every tool shares it: by convention
+`journal_file = "%EA_LOCAL%/journal.jsonl"`), each prep written, updated or refreshed, and each `mark-read`, is also
+**one JSON line in a journal shared by the tools**, written through background-tools-lib's
+[ActivityJournal](https://github.com/gareth-jones-zen/background-tools-lib#activityjournal), for a "while you were
+away" view. Without it, nothing is written (the default).
+
+```json
+{"id":"7e21c4a09b3d","when":"2026-11-11T07:00:41.208+00:00","tool":"meeting-preps","what":"prep","by":"auto","subject":"Sam 1:1, Wed 11 Nov 11:00","rule":"prep","why":"due: a draft to read before the meeting","item":"preps/2026-11-11-sam-jones-prep.md","sensitivity":"restricted"}
+```
+
+| `what` | When | `by` | `undo` |
+|---|---|---|---|
+| `prep` | a prep (or its companion, or a document) written | `auto` (the watcher, `run`); `hand` (`write`) | none |
+| `update` | an update block from a transcript (`update`, `hook`, the hook's queue) | `auto` | none |
+| `refresh` | the pre-meeting refresh from email and Teams | `auto` | none |
+| `mark-read` | `mark-read FILE` took the draft marker out | `hand` | `meeting-preps mark-read "FILE" --undo` |
+| `mark-draft` | `mark-read FILE --undo` put it back | `hand` | `meeting-preps mark-read "FILE"` |
+
+- **Only what was written into the workspace**: never a dry run, `prompt`, `plan`, a write to a folder outside the
+  workspace (`write ... --out`), or a `mark-read` that changed nothing.
+- `subject` is the meeting and its start (an update's, with the transcript it came from); `item` is the prep's path in
+  the workspace (the first file, for a prep with a companion). **Never a prep's contents.**
+- **Every line is `"sensitivity": "restricted"`**: a prep's meeting, its file name and the transcript it was updated
+  from can name a person (a 1:1 with a report) or need-to-know work, so a screen shown to others hides the whole line.
+- **Writing it never fails the run**: a problem is logged (`journal: couldn't write to ...`) and the run carries on.
 
 ## Committing and review
 

@@ -311,6 +311,7 @@ public static class Cli
                 case "run":
                     return engine.Run(flags.Contains("--dry-run"));
                 case "write":
+                    engine.By = ActivityJournal.By.Hand;
                     foreach (var written in engine.WriteOne(DateOnly.FromDateTime(PyTime.FromIso(positional[0])), positional[1], outDir))
                         if (outDir is not null)
                             Print(host.Out, written);

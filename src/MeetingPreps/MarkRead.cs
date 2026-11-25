@@ -121,6 +121,8 @@ public static class MarkRead
         }
 
         Say(string.Join("\n", lines));
+        if (!dryRun && changes.Count > 0)
+            Activity.Marked(config, log, name, undo);
         if (!dryRun && (changes.Count > 0 || done > 0))
             log($"mark-read{(undo ? " --undo" : "")}: {name}: {(changes.Count > 0 ? string.Join("; ", changes) : $"already {state}")}"
                 + (committed is not null ? $"; committed {committed}" : "")

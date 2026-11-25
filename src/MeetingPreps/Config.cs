@@ -74,6 +74,7 @@ public sealed class Config
         "first_thing_before", "day_before_at", "on_the_day_at", "refresh_within_minutes", "leave_pattern", "mail_skip_folders",
         "noise_senders", "noise_rules", "timezone", "time_zone", "scopes", "watch", "schedule", "log_file", "state_file", "calendar_cache",
         "calendar_cache_days", "hook_include", "hook_exclude", "hook_queue", "originals", "leave", "plan_days",
+        "journal_file",
     ];
 
     public const string Template = """
@@ -232,6 +233,10 @@ public sealed class Config
         }, true);
     }
     public required string LogFile { get; init; }
+
+    /// <summary>The shared activity journal (1.12.0; journal_file, usually from the base): one line, restricted, for each
+    /// prep written, updated or refreshed, and each mark-read. Null writes none.</summary>
+    public string? JournalFile { get; init; }
     public required string StateFile { get; init; }
 
     /// <summary>The copy of the last good calendar read, planned from when Graph is down (default: beside the state
@@ -465,6 +470,7 @@ public sealed class Config
             Scopes = raw.TryGetValue("scopes", out var sc) && sc is TomlArray scopes ? scopes.Select(Str).ToList() : ["Calendars.Read", "Mail.Read", "Chat.Read"],
             Schedule = schedule,
             ScheduleFromOldKeys = oldKeys,
+            JournalFile = Optional("journal_file") is { } journal ? PathSetting(journal, folder, env) : null,
             LogFile = Optional("log_file") is { } log ? PathSetting(log, folder, env) : PyPath.Pure(System.IO.Path.Combine(local, "meeting-preps.log")),
             StateFile = stateFile,
             CalendarCache = Optional("calendar_cache") is { } calendarCache ? PathSetting(calendarCache, folder, env) : WithSuffix(stateFile, ".calendar.json"),

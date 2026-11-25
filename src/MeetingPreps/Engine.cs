@@ -459,6 +459,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
     private void Wrote(string type, string meeting, string start, IReadOnlyList<string> written, string? from = null)
     {
         Publish.After(Config, type, meeting, start, written, from, log, Clock.Now);
+        Activity.Wrote(Config, log, By, type, meeting, start, written, from);
         AfterWrite(Report(type, meeting, start, written.Select(Config.Relative), from));
     }
 
@@ -532,6 +533,10 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
 
     /// <summary>Weekdays to treat as leave whatever the calendar says (`--leave`): for trying the leave documents out.</summary>
     public IReadOnlyCollection<DateOnly> PretendLeave { get; set; } = [];
+
+    /// <summary>Who the shared activity journal says wrote what this engine writes (1.12.0): auto (the watcher, a run, an
+    /// update from the hook or the queue), or hand (`write`, set by the command line).</summary>
+    public string By { get; set; } = ActivityJournal.By.Auto;
 
     /// <summary>Your leave periods around [start, start + days), from a calendar read reaching [leave] window_days either
     /// side (with categories, which the day rules read). The read is kept in the state file for an hour, so the watcher

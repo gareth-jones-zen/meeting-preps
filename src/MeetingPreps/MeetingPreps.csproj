@@ -7,6 +7,7 @@
     <ProjectReference Include="$(BackgroundToolsLib)src\RepoCommit\RepoCommit.csproj" />
     <ProjectReference Include="$(BackgroundToolsLib)src\ReviewQueue\ReviewQueue.csproj" />
     <ProjectReference Include="$(BackgroundToolsLib)src\CalendarDays\CalendarDays.csproj" />
+    <ProjectReference Include="$(BackgroundToolsLib)src\ActivityJournal\ActivityJournal.csproj" />
     <PackageReference Include="Tomlyn" Version="2.11.1" />
   </ItemGroup>
   <ItemGroup>
