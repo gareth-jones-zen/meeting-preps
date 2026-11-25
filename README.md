@@ -41,7 +41,7 @@ meeting-preps autostart on
 
 | Command | What it does |
 |---|---|
-| `plan [DATE] [DAYS] [--json] [--leave FIRST..LAST]` | which meetings get a prep, and when (default: `plan_days`, 5 days) |
+| `plan [DATE] [DAYS] [--json] [--leave FIRST..LAST]` | which meetings get a prep, and when (default: from today, for `plan_days`, 5 days). `--from DATE` and `--days N` are DATE and DAYS by name; `--json` is for another program (see "For another program") |
 | `run [--dry-run]` | write whatever is due, then refresh preps for meetings in the next hour |
 | `write DATE "<name>" [--out DIR]` | one prep now: the meeting that day with a person, or a series by subject. `--out` writes it into DIR instead, and doesn't run `after_write`: for trying a change without committing or queuing anything. `--leave FIRST..LAST` (also for `plan` and `prompt`) treats those days as your leave, to try a leave document: `write 2026-11-16 "Return pack" --leave 2026-11-09..2026-11-13 --out %TEMP%\try` |
 | `update <transcript>...` | add "Update HH:MM" blocks to upcoming preps these transcripts touch |
@@ -50,8 +50,9 @@ meeting-preps autostart on
 | `prompt DATE "<name>"` | the prompt a prep would be written from; nothing written, Claude not run |
 | `watch` | a run every few minutes in working hours; what autostart runs |
 | `autostart on` / `off` / `status` | the watcher at every logon, and now |
+| `mark-read FILE [--undo] [--dry-run]` | you've read this prep: its `[DRAFT]` comes out, it's committed, and its review items are done (see "For another program") |
 
-`--config FILE` names another settings file (or set `MEETING_PREPS_CONFIG`); `--version` says which build this is. Exit codes: 0; 1 when a run had failures or couldn't read the calendar; 2 for settings, sign-in, "no such meeting" and usage errors; 3 from `watch` when another watcher is already running for the same settings.
+`--config FILE` names another settings file (or set `MEETING_PREPS_CONFIG`); `--version` says which build this is. Exit codes: 0; 1 when a run had failures or couldn't read the calendar; 2 for settings, sign-in, "no such meeting" and usage errors; 3 from `watch` when another watcher is already running for the same settings. `mark-read`: 0 when marked (or already so), 1 when the file couldn't be changed, 2 for no such file, a file that isn't a prep, or no title to mark.
 
 ## Sharing settings with other tools: `base`
 
@@ -228,8 +229,124 @@ Each point came from a prep engine that ran daily for a month before this tool w
 - **A document kind is for writing, not meeting.** A weekly update written in your own Friday block isn't a prep: there's no one to meet, no previous prep with them, no pre-read. Its prompt is its rules, whole, then the week's diary (from the Monday of the block's week) and email from that Monday (one line each: subject, people, first line; the same mail as a prep sees), plus the series' Teams chat if it names one. Claude reads the workspace itself, as for a prep. House rules aren't added: they're for preps, so a document's rules carry everything it needs.
 - **`own_block` series:** an event of your own with nobody else invited gets nothing ("your own block") unless a series names its subject. Marked `own_block`, the series matches only such a block (yours, nobody else in it): the same subject with other people in it is classified like any other meeting, and a block shown as free is still written for. There's no `weekly` slot to put it back: no block (on leave, say) means no draft. **It stays worth writing for the rest of its day**: you may write in it later, and a run that wakes after the block started (after a usage limit, say) still writes it. Later transcripts that day still update it.
 - **Leave documents (1.7.0): a series with `leave` is written around your own leave, not for a meeting.** Three weeks away is the case it's for: the automations keep working, but nothing tells you on the first morning back what happened, and nothing reminds you on the last day what's set to happen while you're gone. `leave = "return"` is written on the first working day back (at the first run, unless `due_same_day_at` says later), `leave = "before"` on the last working day before (09:00 by default), each for leave of at least `[leave] min_working_days` weekdays. **What counts as leave is background-tools-lib's CalendarDays**, the day rules [out-of-office](https://github.com/gareth-jones-zen/out-of-office) uses, so the two agree on the days away and the day you're back: your own entries (no one else invited) matching `subjects` or `categories`, covering `min_hours` of the day or all of it (a shorter one, or one matching `half_day`, is half a day); weekends and bank holidays (`bank_holiday_subjects` or `_categories`) join the days either side, and a bank holiday counts as a day away. (The leave days on which no prep is written are still `leave_pattern`'s, as before.) The calendar is read `window_days` either side for this, with its categories, once an hour (the copy is kept in the state file). **A leave document goes first in a run**, ahead of other preps due, unless a meeting starts within the hour. Its prompt is its rules, the period, the diary with all-day entries and declined meetings (the return: the first week back; before: from that day to a week after the return, so leave cover and what's been declined show) and email headlines (the return: everything since the last working day before; before: the last 14 days); the return pack is told where the before-you-go pack is, and the other way round. `write`, `plan` and `prompt` take `--leave FIRST..LAST` to try one on days that weren't leave.
-- **Claude only reads**, with read-only tools in your workspace and no connectors; this tool writes the files. Every prep starts `# [DRAFT]` until you've read it.
+- **Claude only reads**, with read-only tools in your workspace and no connectors; this tool writes the files. Every prep starts `# [DRAFT]` until you've read it (take it out by hand, or `mark-read`).
 - **A Microsoft 365 outage doesn't stop it.** On 13 Nov 2026 Graph returned 502s all morning, and every prep failed, one notification each. Now each run keeps a copy of the calendar it read; when the calendar can't be read, it plans from that copy (no older than `calendar_cache_days`) for the days the copy covers. Email, Teams, the diary and `context_commands` each degrade on their own, and a source that has failed isn't asked again in the same run. **A prep written without something says so in a line under its title**, such as *"Microsoft 365 unavailable (HTTP 502 Bad Gateway): email and Teams not read. Written from the calendar as read Thu 12 Nov 17:03; meeting changes since may be missing."* The pre-meeting refresh waits for email and Teams to come back rather than checking half. **One notification per outage**, when the first degraded prep is written or a third run in a row meets it; the outage ends once everything that failed has been read again. A prep still fails, and is still notified, for its own reasons: Claude failing, or the file. With no calendar and no recent copy, the run can't plan, and the watcher's "couldn't run" says so after three runs.
+
+## For another program: `plan --json` and `mark-read` (1.11.0)
+
+For a page that shows the coming meetings and their preps, and lets you say you've read one.
+
+**`plan --json`** prints the plan `plan` shows, every meeting in the same order, as JSON (UTF-8, characters as they are;
+the log's lines go to stderr, so stdout is the JSON alone; with no meetings it's still JSON, with `"meetings": []`). It
+takes the same range: `plan --from 2026-11-11 --days 2 --json`, or `plan 2026-11-11 2 --json`, or neither for today and
+`plan_days`. **Every time has its UTC offset in the settings' `timezone`**, so a summer meeting is `+01:00` and a
+winter one `+00:00`. The names are fixed; fields may be added.
+
+```json
+{
+  "generated": "2026-11-11T08:00:00+00:00",
+  "from": "2026-11-11",
+  "days": 2,
+  "timeZone": "GMT Standard Time",
+  "calendarFrom": null,
+  "meetings": [
+    {
+      "start": "2026-11-11T11:00:00+00:00",
+      "end": "2026-11-11T11:30:00+00:00",
+      "subject": "Weekly 1-2-1 - Sam",
+      "series": null,
+      "attendees": ["Sam Jones"],
+      "organizer": "Alex Smith",
+      "online": true,
+      "joinUrl": "https://teams.microsoft.com/l/meetup-join/...",
+      "location": "Room 4",
+      "link": "https://outlook.office365.com/owa/?itemid=...",
+      "decision": "prep",
+      "kind": "direct-report",
+      "with": "Sam Jones",
+      "notAttending": null,
+      "prep": {
+        "path": "preps/2026-11-11-sam-jones-1to1-prep.md",
+        "exists": true,
+        "draft": false,
+        "read": true,
+        "writtenAt": "2026-11-11T07:00:12+00:00",
+        "updates": 1,
+        "queued": 1,
+        "updatedSinceRead": true,
+        "plannedFor": "2026-11-11T07:00:00+00:00",
+        "previous": "preps/2026-11-04-sam-jones-1to1-prep.md"
+      },
+      "skip": null
+    },
+    {
+      "start": "2026-11-11T14:00:00+00:00",
+      "end": "2026-11-11T15:00:00+00:00",
+      "subject": "All hands",
+      "series": null,
+      "attendees": ["Sam Jones", "Kim Lee"],
+      "organizer": "Kim Lee",
+      "online": false,
+      "joinUrl": null,
+      "location": null,
+      "link": "https://outlook.office365.com/owa/?itemid=...",
+      "decision": "skip",
+      "kind": null,
+      "with": null,
+      "notAttending": null,
+      "prep": {"path": null, "exists": false, "draft": false, "read": false, "writtenAt": null, "updates": 0,
+               "queued": 0, "updatedSinceRead": false, "plannedFor": null, "previous": null},
+      "skip": "group, 3 people"
+    }
+  ]
+}
+```
+
+- **`generated`** is when it ran; **`calendarFrom`** is when the copy of the calendar it planned from was read, in an
+  outage (null when it read the calendar live).
+- **A meeting:** `attendees` are the other people (not you, not rooms); `online` and `joinUrl` say whether it's a Teams
+  meeting and how to join it; `link` opens it in Outlook. `decision` is `prep`, `unsure` (a 1:1 with someone the
+  settings don't name) or `skip`, and **`skip` is why it gets no prep** (null when it gets one). `kind`, `with` (the
+  person, for a 1:1) and `notAttending` (a series you've declined) are as `plan` has them. A meeting with another
+  folded into its prep has `absorbed` (`subject`, `start`, `end`); a leave document has `leave` (`first`, `last`,
+  `back`, `weekdays`) and no attendees.
+- **`prep`** is always there, with the same keys (a meeting with no prep has `path` null): `path` is where it is or
+  will be, relative to the workspace; `exists`; **`draft`** (its title has `[DRAFT]`, or its frontmatter `status:
+  draft`) and **`read`** (it exists and isn't a draft); `writtenAt` (when it was first written: the earlier of the
+  file's creation and modification times); `updates` (its "Update HH:MM" blocks); `queued` (its open items in the
+  review queue); **`updatedSinceRead`** (read, but an update or refresh has been added since: an open `update` or
+  `refresh` review item names it); `plannedFor` (when it's due to be written) and `previous` (the earlier prep it's
+  modelled on). A prep with a companion (a pre-read) also has `companion`, with the same file keys.
+
+**`mark-read FILE`** is you having read a prep. FILE is a path from the current folder, the workspace or the output
+folder (`mark-read preps/2026-11-11-sam-jones-1to1-prep.md`), and must be a `.md` file in the workspace, the output
+folder or a series' folder. Then:
+
+1. **The draft marker comes out**: `# [DRAFT] Weekly 1-2-1 - Sam` becomes `# Weekly 1-2-1 - Sam`, and a frontmatter
+   `status: draft` (which this tool doesn't write, but a document you've given frontmatter may have) becomes `status:
+   read`. Nothing else in the file changes: not its line endings, its byte order mark or its creation time.
+2. **The file alone is committed** (with `[git]`), as the tool commits its own writes: `Mark
+   2026-11-11-sam-jones-1to1-prep.md read`, then "Done by meeting-preps mark-read (tools/meeting-preps.toml).", your
+   trailers, and a push with `push = true`. Any edits of your own in that file go into the same commit; nothing else
+   is swept up. Without git (or `[git]`), the file is marked and nothing is committed.
+3. **Its review items are done** (with `[review]`): this tool's items whose `files` name it, each once every file it
+   names has been read, so a prep and its pre-read, queued together, are done when both are.
+
+Already read, it changes nothing and still clears its review items: so after an update to a read prep, `mark-read`
+again says you've read the update. **`--undo`** puts the marker back (`[DRAFT]` at the start of the title, or `status:
+read` back to `status: draft`) and commits that; the review items stay done. **`--dry-run`** says what it would do and
+changes nothing. There's no `--yes`: it's local, and undone as easily.
+
+**A read prep is kept current like any other, and stays read.** The pre-meeting refresh and transcript updates still
+add their "Update HH:MM" blocks to it (nothing treats a prep without `[DRAFT]` as yours to be left alone), and they don't
+put `[DRAFT]` back: the update's own review item (`update` or `refresh`) is the news, and `plan --json` shows it as
+`updatedSinceRead` until you `mark-read` again. The refresh looks for messages since the prep was first written, which
+marking it read doesn't move (the creation time is kept). `run` never rewrites a prep that exists; `write` by hand does,
+and a prep written afresh is a draft again. An update block going in and a marker coming out each take a short lock on
+the file while they read and write it, so neither loses the other's change; `mark-read` never waits for a Claude run.
+
+**Until 1.11.0, `plan --json`** printed the planner's rows as the Python version did (a list, local times without an
+offset), for comparing the two; nothing else read it.
 
 ## Committing and review
 

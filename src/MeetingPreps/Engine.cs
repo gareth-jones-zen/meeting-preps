@@ -414,6 +414,24 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
         return held;
     }
 
+    /// <summary>The lock for changing a file that's already written, held only while it's read, changed and written back:
+    /// an update block going in, or mark-read taking its marker out. Not the writer's lock, which an update holds for
+    /// the whole of a Claude run, so marking a prep read never waits for one.</summary>
+    public static string EditLockName(string prefix, string path) => $"{prefix}meeting-preps-edit-{Locks.Key(PyPath.Resolve(path))}";
+
+    public static NamedLock EditLock(string prefix, string path, double wait = 30)
+    {
+        var held = new NamedLock(EditLockName(prefix, path));
+        if (!held.Acquire(wait))
+        {
+            held.Dispose();
+            throw new LockTimeoutException($"Another change to {Path.GetFileName(path)} didn't finish within {wait:0} seconds.");
+        }
+        return held;
+    }
+
+    private NamedLock EditLock(string path) => EditLock(host.LockPrefix, path);
+
     private void Limited(IReadOnlyList<string> args, LimitReachedException limit)
     {
         List<string> argv = [host.Exe, "--config", Config.Path, .. args];
@@ -995,7 +1013,8 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
                         log($"  nothing for {prepName}" + (block.StartsWith("NO UPDATE", StringComparison.Ordinal) ? "" : $": {PyStr.Head(block, 120)}"));
                         continue;
                     }
-                    AddBlock(prep, block);
+                    using (EditLock(prep))
+                        AddBlock(prep, block);
                     log($"  added an update to {prepName}");
                 }
             }
@@ -1021,7 +1040,7 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
 
     /// <summary>When the prep was written: the earlier of its creation and modification times (on Windows st_ctime is
     /// creation, so a transcript update since doesn't move "since").</summary>
-    private static DateTimeOffset WrittenAt(string prep)
+    internal static DateTimeOffset WrittenAt(string prep)
     {
         var created = File.GetCreationTimeUtc(prep);
         var modified = File.GetLastWriteTimeUtc(prep);
@@ -1086,7 +1105,8 @@ public sealed class Engine(Config config, IGraph graph, Action<string> log, Prep
                         SaveRefreshed(done);
                         continue;
                     }
-                    AddBlock(prep, block);
+                    using (EditLock(prep))
+                        AddBlock(prep, block);
                     log($"  added an update to {prepName}");
                 }
             }

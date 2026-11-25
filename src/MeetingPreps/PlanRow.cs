@@ -15,8 +15,12 @@ public sealed class PlanRow
 
     private PlanRow(JsonObject data) => this.data = data;
 
-    /// <summary>{**row}: a copy, keys in the same order.</summary>
-    public PlanRow Copy() => new((JsonObject)data.DeepClone());
+    /// <summary>{**row}: a copy, keys in the same order (and the same event).</summary>
+    public PlanRow Copy() => new((JsonObject)data.DeepClone()) { Event = Event };
+
+    /// <summary>The calendar event the row was made from (null for a leave document), for `plan --json`'s people,
+    /// place and end date. Not one of the row's keys.</summary>
+    public JsonObject? Event { get; set; }
 
     public JsonObject Json => data;
 

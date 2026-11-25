@@ -24,7 +24,7 @@ public static class Planner
             ("startDateTime", $"{PyTime.Iso(start)}T00:00:00"),
             ("endDateTime", $"{PyTime.Iso(start.AddDays(days))}T00:00:00"),
             ("$top", "200"), ("$orderby", "start/dateTime"),
-            ("$select", "subject,start,end,attendees,organizer,isCancelled,showAs,responseStatus,isAllDay,webLink" + extraSelect),
+            ("$select", "subject,start,end,attendees,organizer,isCancelled,showAs,responseStatus,isAllDay,webLink,location,isOnlineMeeting,onlineMeeting" + extraSelect),
         ]);
         var headers = new Dictionary<string, string> { ["Prefer"] = $"outlook.timezone=\"{config.TimeZone}\"" };
         return graph.Pages($"/me/calendarView?{query}", headers).Select(e => (JsonObject)e!).ToList();
@@ -153,12 +153,9 @@ public static class Planner
 
     internal static bool IsRoom(string name) => PyRegex.Get("(?i)mtg room|room ").MatchStart(name) is not null;
 
-    public static PlanRow Classify(Config config, JsonObject e)
+    /// <summary>The meeting's other people: its attendees' names, without you, rooms and other resources.</summary>
+    public static List<string> Others(Config config, JsonObject e)
     {
-        var begins = Time19(e, "start");
-        var ends = Time19(e, "end");
-        var subject = Py.Truthy(e["subject"]) ? Py.Str(e["subject"]) : "(no subject)";
-        var row = new PlanRow(PyTime.Iso(begins, "minutes"), PyTime.Strftime(ends, "%H:%M"), subject);
         var others = new List<string>();
         foreach (var a in e["attendees"] as JsonArray ?? [])
         {
@@ -170,6 +167,24 @@ public static class Planner
                 continue;
             others.Add(name);
         }
+        return others;
+    }
+
+    /// <summary>A meeting's row in the plan, carrying the calendar event it came from (for `plan --json`).</summary>
+    public static PlanRow Classify(Config config, JsonObject e)
+    {
+        var row = ClassifyEvent(config, e);
+        row.Event = e;
+        return row;
+    }
+
+    private static PlanRow ClassifyEvent(Config config, JsonObject e)
+    {
+        var begins = Time19(e, "start");
+        var ends = Time19(e, "end");
+        var subject = Py.Truthy(e["subject"]) ? Py.Str(e["subject"]) : "(no subject)";
+        var row = new PlanRow(PyTime.Iso(begins, "minutes"), PyTime.Strftime(ends, "%H:%M"), subject);
+        var others = Others(config, e);
         if (Py.Truthy(e["isCancelled"]))
             return Skip(row, "cancelled");
         if (Py.Truthy(e["isAllDay"]) || begins == ends)
@@ -407,6 +422,7 @@ public static class Planner
         return name.Length >= 2 && name[1] == ':' && cut < 0 ? name[2..] : name;
     }
 
-    /// <summary>The plan as `plan --json` prints it: json.dumps(plan, indent=2).</summary>
+    /// <summary>The plan's rows as the Python's `plan --json` printed them, json.dumps(plan, indent=2): kept for the
+    /// parity scenarios. `plan --json` itself prints PlanJson's shape since 1.11.0.</summary>
     public static string Json(List<PlanRow> plan) => PyJson.Dump(new JsonArray(plan.Select(p => (JsonNode)p.Json.DeepClone()).ToArray()), 2);
 }

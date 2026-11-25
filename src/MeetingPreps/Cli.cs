@@ -19,6 +19,7 @@ public static class Cli
             meeting-preps config                     create the settings file (if missing) and say where it is
             meeting-preps sign-in                    sign in to Microsoft (once; opens a browser)
             meeting-preps plan [DATE] [DAYS]         which meetings get a prep, and when (default: plan_days, 5)
+                                                     --from DATE, --days N: the same; --json: as JSON
             meeting-preps run [--dry-run]            write whatever is due, then refresh preps for meetings in the next hour
             meeting-preps write DATE "<name>" [--out DIR]   one prep now: the meeting that day with a person, or a series
                                                      by subject (--out: written into DIR, after_write not run)
@@ -30,6 +31,8 @@ public static class Cli
             meeting-preps prompt DATE "<name>"       the prompt a prep would be written from; nothing written, Claude not run
             meeting-preps watch                      a run every few minutes in working hours; what autostart runs
             meeting-preps autostart on               the watcher at every logon, and now (off, restart, status)
+            meeting-preps mark-read FILE             you've read this prep: its [DRAFT] out, committed, its review items done
+                                                     (--undo puts the marker back; --dry-run changes nothing)
 
         options: --config FILE (default %APPDATA%\meeting-preps\config.toml), --version
         """;
@@ -95,7 +98,7 @@ public static class Cli
             throw new UsageException("the following arguments are required: command");
         var command = argv[i];
         rest.AddRange(argv.Skip(i + 1));
-        string[] commands = ["config", "sign-in", "plan", "run", "write", "update", "hook", "context", "prompt", "watch", "autostart", "run-queue"];
+        string[] commands = ["config", "sign-in", "plan", "run", "write", "update", "hook", "context", "prompt", "watch", "autostart", "run-queue", "mark-read"];
         if (!commands.Contains(command))
             throw new UsageException($"argument command: invalid choice: {Py.ReprString(command)}");
         string? outDir = null;   // write --out DIR: written there, after_write not run
@@ -147,9 +150,40 @@ public static class Cli
                 pretend.AddRange(PretendDays(given));
             }
         }
-        var flags =rest.Where(r => r.StartsWith("--", StringComparison.Ordinal)).ToList();
+        string? fromGiven = null, daysGiven = null;   // plan --from DATE --days N: the positional DATE and DAYS by name
+        if (command == "plan")
+        {
+            for (var k = 0; k < rest.Count; k++)
+            {
+                foreach (var name in new[] { "--from", "--days" })
+                {
+                    string? value = null;
+                    if (rest[k] == name)
+                    {
+                        if (k + 1 >= rest.Count)
+                            throw new UsageException($"argument {name}: expected one argument");
+                        value = rest[k + 1];
+                        rest.RemoveRange(k, 2);
+                    }
+                    else if (rest[k].StartsWith(name + "=", StringComparison.Ordinal))
+                    {
+                        value = rest[k][(name.Length + 1)..];
+                        rest.RemoveAt(k);
+                    }
+                    else
+                        continue;
+                    if (name == "--from")
+                        fromGiven = value;
+                    else
+                        daysGiven = value;
+                    k--;
+                    break;
+                }
+            }
+        }
+        var flags = rest.Where(r => r.StartsWith("--", StringComparison.Ordinal)).ToList();
         var positional = rest.Where(r => !r.StartsWith("--", StringComparison.Ordinal)).ToList();
-        string[] allowed = command switch { "plan" => ["--json"], "run" => ["--dry-run"], _ => [] };
+        string[] allowed = command switch { "plan" => ["--json"], "run" => ["--dry-run"], "mark-read" => ["--undo", "--dry-run"], _ => [] };
         foreach (var flag in flags)
             if (!allowed.Contains(flag))
                 throw new UsageException($"unrecognized arguments: {flag}");
@@ -167,15 +201,40 @@ public static class Cli
             case "write" or "prompt": Count(2, 2, "date, who"); break;
             case "update": Count(1, int.MaxValue, "transcripts"); break;
             case "context": Count(1, 1, "name"); break;
+            case "mark-read": Count(1, 1, "file"); break;
             case "autostart":
                 Count(1, 1, "action");
                 if (positional[0] is not ("on" or "off" or "restart" or "status"))
                     throw new UsageException($"argument action: invalid choice: {Py.ReprString(positional[0])} (choose from on, off, restart, status)");
                 break;
         }
+        if (command == "plan")
+        {
+            if (fromGiven is not null && positional.Count > 0 || daysGiven is not null && positional.Count > 1)
+                throw new UsageException("give the date and days either by position or as --from and --days, not both");
+            if (fromGiven is not null)
+                positional.Insert(0, fromGiven);
+            if (daysGiven is not null)
+            {
+                if (positional.Count == 0)
+                    positional.Add(PyTime.Iso(DateOnly.FromDateTime(host.Clock.Now())));
+                positional.Add(daysGiven);
+            }
+        }
         int? givenDays = null;
         if (command == "plan" && positional.Count == 2)
             givenDays = int.TryParse(positional[1], out var parsedDays) ? parsedDays : throw new UsageException($"argument days: invalid int value: {Py.ReprString(positional[1])}");
+        if (command == "plan" && positional.Count > 0)
+        {
+            try
+            {
+                PyTime.FromIso(positional[0]);
+            }
+            catch (FormatException)
+            {
+                throw new UsageException($"argument date: {Py.ReprString(positional[0])} isn't a date (yyyy-mm-dd)");
+            }
+        }
 
         if (command == "config")
         {
@@ -194,6 +253,8 @@ public static class Cli
         }
         if (command == "autostart")
             return Autostart.Command(positional[0], config, host);
+        if (command == "mark-read")
+            return MarkRead.Run(config, positional[0], flags.Contains("--undo"), flags.Contains("--dry-run"), host);
         if (command == "watch")
             return Watch.Run(config, host);
         if (command == "run-queue")   // the seat's queue of Claude jobs (background-tools-lib's ClaudeHeadless), as the hook starts it
@@ -211,7 +272,9 @@ public static class Cli
             return 0;
         }
 
-        var log = Logger.Create(config.LogFile, host.LogEcho, stampEcho: false, clock: host.Clock.Now);
+        var json = command == "plan" && flags.Contains("--json");
+        // With --json, stdout is the JSON alone: the log's echo goes to stderr.
+        var log = Logger.Create(config.LogFile, json && host.LogEcho is not null ? host.Err : host.LogEcho, stampEcho: false, clock: host.Clock.Now);
         try
         {
             if (command == "sign-in")
@@ -228,8 +291,8 @@ public static class Cli
                 var start = positional.Count > 0 ? DateOnly.FromDateTime(PyTime.FromIso(positional[0])) : DateOnly.FromDateTime(host.Clock.Now());
                 var planDays = givenDays ?? config.PlanDays;
                 var plan = engine.PlanRows(start, planDays);
-                Print(host.Out, flags.Contains("--json") ? Planner.Json(plan) : Planner.Show(plan, start, planDays));
-                if (engine.CalendarFrom is { } from && !flags.Contains("--json"))
+                Print(host.Out, json ? PlanJson.Text(PlanJson.Build(config, engine, plan, start, planDays, host.Clock)) : Planner.Show(plan, start, planDays));
+                if (engine.CalendarFrom is { } from && !json)
                     Print(host.Out, $"\n(The calendar couldn't be read: planned from the copy read {PyTime.Strftime(from, "%a %d %b %H:%M")}.)");
                 return 0;
             }
