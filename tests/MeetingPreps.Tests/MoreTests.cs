@@ -294,4 +294,61 @@ public class MoreTests
         Assert.Equal(3, done.ExitCode);
         Assert.Equal("in-Sam\u00e9\n", done.StandardOutput);
     }
+
+    /// <summary>A 1:1 chat with Sam holding the messages given (HTML bodies), each a minute apart.</summary>
+    private sealed class Chat(params string[] bodies) : IGraph
+    {
+        public JsonObject Get(string url) => url.StartsWith("/me/chats", StringComparison.Ordinal)
+            ? new JsonObject
+            {
+                ["value"] = new JsonArray(new JsonObject
+                {
+                    ["id"] = "c1", ["chatType"] = "oneOnOne", ["topic"] = null,
+                    ["members"] = new JsonArray(new JsonObject { ["displayName"] = "Sam Jones" }, new JsonObject { ["displayName"] = "Me" }),
+                }),
+            }
+            : new JsonObject
+            {
+                ["value"] = new JsonArray(bodies.Select((b, i) => (JsonNode)new JsonObject
+                {
+                    ["createdDateTime"] = $"2026-11-10T09:{i:00}:00Z", ["messageType"] = "message",
+                    ["body"] = new JsonObject { ["content"] = b },
+                    ["from"] = new JsonObject { ["user"] = new JsonObject { ["displayName"] = "Sam Jones" } },
+                }).ToArray()),
+            };
+
+        public IEnumerable<JsonNode?> Pages(string url, IReadOnlyDictionary<string, string>? headers = null) => [];
+    }
+
+    /// <summary>What Context.Teams says each message is, oldest first.</summary>
+    private static string[] TeamsLines(params string[] bodies) =>
+        Context.Teams(new Chat(bodies), "Sam Jones", Clock.Fixed(new DateTime(2026, 11, 11, 8, 0, 0), ScenarioRunner.London))
+            .Split('\n').Select(l => l[(l.IndexOf("Sam Jones: ", StringComparison.Ordinal) + "Sam Jones: ".Length)..]).ToArray();
+
+    [Fact]
+    public void A_teams_message_of_600_characters_comes_through_whole()
+    {
+        var text = string.Concat(Enumerable.Repeat("The rollout moves a week. ", 24)).Trim() + " Agreed.";
+        Assert.Equal(631, text.Length);
+        Assert.Equal(text, TeamsLines($"<p>{text}</p>").Single());
+    }
+
+    [Fact]
+    public void A_teams_message_over_2000_characters_is_cut_and_says_so() =>
+        Assert.Equal(new string('a', 2000) + " [\u2026cut]", TeamsLines(new string('a', 2500)).Single());
+
+    [Fact]
+    public void Teams_entities_are_decoded_and_a_non_breaking_space_is_a_space() =>
+        Assert.Equal("It's \"done\" <soon> & dusted ok",
+            TeamsLines("<div>It&#39;s &quot;done&quot; &lt;soon&gt; &amp; dusted&nbsp;<b>ok</b></div>").Single());
+
+    [Fact]
+    public void Older_teams_messages_fall_back_to_500_once_the_budget_is_spent()
+    {
+        var text = new string('b', 1999);
+        var lines = TeamsLines(Enumerable.Repeat(text, 22).ToArray());   // 22 x 1,999 is over the 40,000 budget
+        Assert.Equal(22, lines.Length);
+        Assert.All(lines[1..], l => Assert.Equal(text, l));             // the newest 21 start within it, whole
+        Assert.Equal(new string('b', 500) + " [\u2026cut]", lines[0]);       // the oldest is cut, and says so
+    }
 }

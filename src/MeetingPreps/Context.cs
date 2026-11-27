@@ -11,7 +11,8 @@ namespace MeetingPreps;
 /// responses and invites, automated senders, the folders in mail_skip_folders, anything a mail-triage delete rule
 /// would delete (noise_rules), and external mail with nobody else from org_domain on it. **For a 1:1, each email
 /// comes in full** (quoted history cut, a forward kept whole, each capped, all capped); for a group, a line each.
-/// **Teams:** your 1:1 chat with the person and small group chats you share (or the series' chat by name). **The
+/// **Teams:** your 1:1 chat with the person and small group chats you share (or the series' chat by name), each
+/// message as plain text, capped as an email body is and marked when cut. **The
 /// diary** says who each small meeting is with. Mail and Teams throw when Graph fails; the engine catches it
 /// (Engine.Read), so a failure never stops a prep: the prep says at the top what couldn't be read, and why.
 /// Everything is formatted exactly as the Python's context.py did.</summary>
@@ -26,7 +27,7 @@ public static class Context
     private static readonly PyRegex BlankLines = PyRegex.Get(@"\n\s*\n+");
     private static readonly PyRegex Tag = PyRegex.Get("<[^>]+>");
     private static readonly PyRegex Space = PyRegex.Get(@"\s+");
-    public const int BodyCap = 2000, BodiesCap = 40000;
+    public const int BodyCap = 2000, BodiesCap = 40000, ChatCap = 500;
 
     private static string Text(JsonNode? node) => node is JsonValue v ? Py.Str(v) : "";
 
@@ -182,7 +183,7 @@ public static class Context
         content = Caution.Sub("", PyStr.Strip(BlankLines.Sub("\n", content)));
         if (PyMore.Len(content) <= PyMore.Len(preview) + 20)
             return "";
-        return PyStr.Head(content, BodyCap) + (PyMore.Len(content) > BodyCap ? " […cut]" : "");
+        return Capped(content, BodyCap);
     }
 
     public static string Mail(IGraph graph, Config config, string? name, Clock clock, int days = 14, int cap = 150,
@@ -285,7 +286,7 @@ public static class Context
             return "(none)";   // a series with no chat named: nothing to look for, so no call to make
         var since = sinceTime is { } s ? s.ToUniversalTime() : clock.NowUtc().AddDays(-days);
         var chats = graph.Get("/me/chats?$expand=members&$top=50");
-        var lines = new List<(DateTimeOffset Sent, string Line)>();
+        var messages = new List<(DateTimeOffset Sent, string Head, string Text)>();
         foreach (var chat in chats["value"] as JsonArray ?? [])
         {
             var members = (chat?["members"] as JsonArray ?? []).Select(m => TextOr(m?["displayName"], "")).ToList();
@@ -302,17 +303,39 @@ public static class Context
                 var sent = PyMore.AwareFromIso(Py.Str(message!["createdDateTime"]));
                 if (Text(message["messageType"]) != "message" || sent < since)
                     continue;
-                var text = Tag.Sub(" ", TextOr(message["body"]?["content"], ""));
-                text = PyStr.Strip(Space.Sub(" ", text.Replace("&nbsp;", " ").Replace("&amp;", "&")));
+                var text = ChatText(TextOr(message["body"]?["content"], ""));
                 var from = Py.Truthy(message["from"]) ? message["from"] : null;
                 var user = Py.Truthy(from?["user"]) ? from!["user"] : null;
                 var sender = TextOr(user?["displayName"], "?");
                 if (text.Length > 0)
-                    lines.Add((sent, $"- {Strftime(clock.ToLocal(sent), "%a %d %b %H:%M")} [{PyStr.Head(label, 40)}] {sender}: {PyStr.Head(text, 500)}"));
+                    messages.Add((sent, $"- {Strftime(clock.ToLocal(sent), "%a %d %b %H:%M")} [{PyStr.Head(label, 40)}] {sender}: ", text));
             }
         }
-        var sorted = lines.OrderBy(l => l.Sent).ThenBy(l => l.Line, PyStr.Order).ToList();
+        var sorted = messages.OrderBy(l => l.Sent).ThenBy(l => l.Head + l.Text, PyStr.Order).ToList();
         var kept = PyMore.Last(sorted, cap);
-        return kept.Count > 0 ? string.Join("\n", kept.Select(l => l.Line)) : "(none)";
+        // Each message is capped at BodyCap, newest first, until BodiesCap is spent; older ones then at ChatCap. A
+        // message that's cut says so either way, so a prep never quotes half a sentence as if it were the whole.
+        var lines = new string[kept.Count];
+        var budget = BodiesCap;
+        for (var i = kept.Count - 1; i >= 0; i--)
+        {
+            var shown = Capped(kept[i].Text, budget > 0 ? BodyCap : ChatCap);
+            budget -= PyMore.Len(shown);
+            lines[i] = kept[i].Head + shown;
+        }
+        return lines.Length > 0 ? string.Join("\n", lines) : "(none)";
     }
+
+    /// <summary>A Teams message body (HTML) as one line of plain text: tags out, entities decoded (a non-breaking
+    /// space as a plain one), whitespace squeezed.</summary>
+    public static string ChatText(string content)
+    {
+        var text = Tag.Sub(" ", content).Replace("&nbsp;", " ");
+        text = System.Net.WebUtility.HtmlDecode(text).Replace(' ', ' ');
+        return PyStr.Strip(Space.Sub(" ", text));
+    }
+
+    /// <summary>Text capped at a number of characters, ending " […cut]" when it was longer: an email body and a
+    /// Teams message alike.</summary>
+    public static string Capped(string text, int cap) => PyStr.Head(text, cap) + (PyMore.Len(text) > cap ? " […cut]" : "");
 }
